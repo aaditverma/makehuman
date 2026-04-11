@@ -27,7 +27,7 @@ const garments: Record<string, GarmentSizeChart> = {
     type: 'top',
     neckline: 'round',
     sleeveEnd: 0.62,  // short sleeves end mid-upper-arm
-    coverage: { hMin: 0.56, hMax: 0.78 },
+    coverage: { hMin: 0.54, hMax: 0.78 },
     sizes: {
       'XS': { chest: 90, waist: 86, shoulder: 42 },
       'S':  { chest: 96, waist: 92, shoulder: 44 },
@@ -42,7 +42,7 @@ const garments: Record<string, GarmentSizeChart> = {
     type: 'top',
     neckline: 'vneck',
     sleeveEnd: 0.62,
-    coverage: { hMin: 0.56, hMax: 0.78 },
+    coverage: { hMin: 0.54, hMax: 0.78 },
     sizes: {
       'XS': { chest: 90, waist: 86, shoulder: 42 },
       'S':  { chest: 96, waist: 92, shoulder: 44 },
@@ -114,8 +114,7 @@ const heightToMeasurement: Array<{ hCenter: number; hWidth: number; measurement:
 ];
 
 export interface HeatmapResult {
-  /** For each vertex: check if covered by garment and get fit score */
-  getVertexFit(normalizedHeight: number, xAbs: number, yPos: number, distFromCenter: number): { covered: boolean; fitScore: number };
+  getVertexFit(normalizedHeight: number, xAbs: number, yPos: number, distFromCenter: number): { covered: boolean; fitScore: number; edgeFade: number };
 }
 
 /**
@@ -182,20 +181,20 @@ export function computeHeatmap(
       // --- Garment shape coverage ---
       if (isTop) {
         // Head: never covered
-        if (h > 0.83) return { covered: false, fitScore: 0 };
+        if (h > 0.83) return { covered: false, fitScore: 0, edgeFade: 0 };
         // Below hem
-        if (h < hMin) return { covered: false, fitScore: 0 };
+        if (h < hMin) return { covered: false, fitScore: 0, edgeFade: 0 };
 
         // Neckline cutout
         const neckline = garment.neckline ?? 'round';
         if (neckline === 'round') {
-          if (h > 0.78 && distFromCenter < 0.06) return { covered: false, fitScore: 0 };
+          if (h > 0.78 && distFromCenter < 0.06) return { covered: false, fitScore: 0, edgeFade: 0 };
         } else if (neckline === 'vneck') {
-          if (h > 0.78 && distFromCenter < 0.06) return { covered: false, fitScore: 0 };
+          if (h > 0.78 && distFromCenter < 0.06) return { covered: false, fitScore: 0, edgeFade: 0 };
           // V extends down on front only
-          if (h > 0.73 && h < 0.80 && distFromCenter < 0.04 && yPos > 0) return { covered: false, fitScore: 0 };
+          if (h > 0.73 && h < 0.80 && distFromCenter < 0.04 && yPos > 0) return { covered: false, fitScore: 0, edgeFade: 0 };
         } else {
-          if (h > 0.80 && distFromCenter < 0.05) return { covered: false, fitScore: 0 };
+          if (h > 0.80 && distFromCenter < 0.05) return { covered: false, fitScore: 0, edgeFade: 0 };
         }
 
         // Sleeve logic: only for arm vertices (far from torso center)
@@ -203,17 +202,17 @@ export function computeHeatmap(
         const isFarFromTorso = distFromCenter > 0.16;
         if (isFarFromTorso) {
           // This is an arm/hand vertex
-          if (h < sleeveEnd) return { covered: false, fitScore: 0 };  // below sleeve end
-          if (h < 0.50) return { covered: false, fitScore: 0 };  // hands always uncovered
+          if (h < sleeveEnd) return { covered: false, fitScore: 0, edgeFade: 0 };  // below sleeve end
+          if (h < 0.50) return { covered: false, fitScore: 0, edgeFade: 0 };  // hands always uncovered
         }
       } else {
         // Jeans / pants shape:
         // Above waist: not covered
-        if (h > hMax) return { covered: false, fitScore: 0 };
+        if (h > hMax) return { covered: false, fitScore: 0, edgeFade: 0 };
         // Below ankles
-        if (h < 0.04) return { covered: false, fitScore: 0 };
+        if (h < 0.04) return { covered: false, fitScore: 0, edgeFade: 0 };
         // Hands only: far from center AND at hand height (h 0.35-0.52)
-        if (distFromCenter > 0.22 && h > 0.35 && h < 0.55) return { covered: false, fitScore: 0 };
+        if (distFromCenter > 0.22 && h > 0.35 && h < 0.55) return { covered: false, fitScore: 0, edgeFade: 0 };
       }
 
       // Blend fit scores from nearby regions using Gaussian weights
@@ -227,7 +226,32 @@ export function computeHeatmap(
       }
 
       const fitScore = totalWeight > 0 ? weightedScore / totalWeight : 0;
-      return { covered: true, fitScore };
+
+      // Edge fade: how close to garment boundary (0 = at edge, 1 = well inside)
+      let edgeFade = 1.0;
+      if (isTop) {
+        // Fade near hem
+        const hemDist = (h - hMin) / 0.03;
+        if (hemDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, hemDist));
+        // Fade near neckline
+        const neckDist = (0.82 - h) / 0.03;
+        if (neckDist < 1 && h > 0.75) edgeFade = Math.min(edgeFade, Math.max(0, neckDist));
+        // Fade near sleeve end
+        const sleeveEnd = garment.sleeveEnd ?? 0.62;
+        if (distFromCenter > 0.12) {
+          const sleeveDist = (h - sleeveEnd) / 0.03;
+          if (sleeveDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, sleeveDist));
+        }
+      } else {
+        // Fade near waistband
+        const waistDist = (hMax - h) / 0.03;
+        if (waistDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, waistDist));
+        // Fade near ankles
+        const ankleDist = (h - 0.04) / 0.03;
+        if (ankleDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, ankleDist));
+      }
+
+      return { covered: true, fitScore, edgeFade };
     },
   };
 }

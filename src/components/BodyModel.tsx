@@ -154,14 +154,14 @@ export function BodyModel() {
       const normalizedH = hRange > 0 ? (y - hMin) / hRange : 0.5;
       const distFromCenter = Math.sqrt(x * x + z * z);
 
-      const { covered, fitScore } = heatmap.getVertexFit(normalizedH, Math.abs(x), z, distFromCenter);
+      const { covered, fitScore, edgeFade } = heatmap.getVertexFit(normalizedH, Math.abs(x), z, distFromCenter);
 
-      if (covered) {
+      if (covered && edgeFade > 0.01) {
         const [r, g, b] = fitScoreToColor(fitScore);
-        // Blend heatmap with white (skin texture will show through)
-        colors[i * 3] = r;
-        colors[i * 3 + 1] = g;
-        colors[i * 3 + 2] = b;
+        // Blend heatmap color with white based on edge fade
+        colors[i * 3] = r * edgeFade + 1.0 * (1 - edgeFade);
+        colors[i * 3 + 1] = g * edgeFade + 1.0 * (1 - edgeFade);
+        colors[i * 3 + 2] = b * edgeFade + 1.0 * (1 - edgeFade);
       } else {
         // Uncovered areas: white (neutral multiply)
         colors[i * 3] = 1;

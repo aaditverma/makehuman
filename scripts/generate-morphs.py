@@ -340,25 +340,26 @@ def bigger_chest(coords):
         c = list(co)
         if d > 0.01 and chest > 0.01:
             c[SIDE] += co[SIDE] * e * 0.5
-            if co[FORWARD] > 0:  # front only
+            if co[FORWARD] < 0:  # front only
                 c[FORWARD] += co[FORWARD] * e * 1.0
         out.append(c)
     return out
 
 def bigger_stomach(coords):
-    """Belly at h=0.53-0.60, front-facing torso only."""
+    """Belly at h=0.50-0.60, front-facing torso only, wider coverage."""
     out = []
     for co in coords:
         h = nh(co)
         d = dist(co)
-        belly = smooth(0.56, 0.03, h)  # centered on belly
-        if is_arm(co) or not is_torso(co): belly = 0
-        e = belly * SCALE * 3.0
+        belly = smooth(0.55, 0.05, h)  # wider Gaussian, centered lower
+        if is_arm(co): belly = 0
+        # Don't require is_torso — belly can extend to sides
+        e = belly * SCALE * 6.0
         c = list(co)
         if belly > 0.01 and d > 0.01:
-            if co[FORWARD] > 0:  # FRONT only — belly sticks forward
-                c[FORWARD] += e * co[FORWARD] * 2.0
-            c[SIDE] += co[SIDE] * e * 0.3
+            if co[FORWARD] < 0:  # FRONT only
+                c[FORWARD] -= e * abs(co[FORWARD]) * 3.5
+            c[SIDE] += co[SIDE] * e * 0.4
         out.append(c)
     return out
 
@@ -455,17 +456,18 @@ def longer_torso(coords):
     return out
 
 def wider_back(coords):
-    """Back/lats — BACK-facing torso verts (FORWARD < 0), h=0.58-0.72."""
+    """Back/lats — BACK-facing torso verts, wider coverage h=0.55-0.75."""
     out = []
     for co in coords:
         h = nh(co)
         d = dist(co)
         c = list(co)
-        if is_torso(co) and co[FORWARD] < -0.01 and d > 0.01:
-            back = smooth(0.65, 0.05, h)
-            e = back * SCALE * 2.0
-            c[SIDE] += co[SIDE] * e
-            c[FORWARD] -= abs(co[FORWARD]) * e * 1.2  # push backward
+        # Back: behind center line, not arms
+        if not is_arm(co) and co[FORWARD] > 0.01 and d > 0.01 and h > 0.50 and h < 0.78:
+            back = smooth(0.64, 0.06, h)
+            e = back * SCALE * 2.5
+            c[SIDE] += co[SIDE] * e * 0.8
+            c[FORWARD] += abs(co[FORWARD]) * e * 1.5  # push backward
         out.append(c)
     return out
 
@@ -475,7 +477,7 @@ def deeper_chest(coords):
     for co in coords:
         h = nh(co)
         c = list(co)
-        if is_torso(co) and co[FORWARD] > 0.01:
+        if is_torso(co) and co[FORWARD] < -0.01:
             chest = smooth(0.68, 0.04, h)
             e = chest * SCALE * 2.5
             c[FORWARD] += co[FORWARD] * e * 1.5  # push forward
@@ -506,11 +508,11 @@ def belly_pouch(coords):
         h = nh(co)
         d = dist(co)
         c = list(co)
-        if is_torso(co) and co[FORWARD] > 0.01 and d > 0.01:
+        if is_torso(co) and co[FORWARD] < -0.01 and d > 0.01:
             pouch = smooth(0.51, 0.035, h)
-            e = pouch * SCALE * 4.0
-            c[FORWARD] += co[FORWARD] * e * 2.5
-            c[UP] -= pouch * SCALE * 0.4 * h_range
+            e = pouch * SCALE * 6.0
+            c[FORWARD] -= abs(co[FORWARD]) * e * 3.5
+            c[UP] -= pouch * SCALE * 0.5 * h_range
         out.append(c)
     return out
 
@@ -542,7 +544,7 @@ def back_fat(coords):
             upper = smooth(0.66, 0.045, h)
             fat = max(lower, upper)
             e = fat * SCALE * 3.0
-            c[FORWARD] -= abs(co[FORWARD]) * e * 1.4
+            c[FORWARD] += abs(co[FORWARD]) * e * 1.4
             c[SIDE] += co[SIDE] * e * 0.3
         out.append(c)
     return out
@@ -569,7 +571,7 @@ def double_chin(coords):
         h = nh(co)
         d = dist(co)
         c = list(co)
-        if h > 0.78 and h < 0.86 and d < 0.08 and co[FORWARD] > 0:
+        if h > 0.78 and h < 0.86 and d < 0.08 and co[FORWARD] < 0:
             chin = smooth(0.82, 0.02, h)
             e = chin * SCALE * 1.5
             c[FORWARD] += co[FORWARD] * e * 1.5
@@ -645,3 +647,4 @@ bpy.ops.export_scene.gltf(
 
 print(f"Exported: {DST}")
 print("Done!")
+
