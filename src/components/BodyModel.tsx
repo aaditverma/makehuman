@@ -146,7 +146,6 @@ export function BodyModel() {
     const hRange = hMax - hMin;
 
     const colors = new Float32Array(count * 3);
-    const skinR = 0.62, skinG = 0.44, skinB = 0.35;
 
     for (let i = 0; i < count; i++) {
       const y = pos.getY(i);
@@ -159,18 +158,27 @@ export function BodyModel() {
 
       if (covered) {
         const [r, g, b] = fitScoreToColor(fitScore);
+        // Blend heatmap with white (skin texture will show through)
         colors[i * 3] = r;
         colors[i * 3 + 1] = g;
         colors[i * 3 + 2] = b;
       } else {
-        colors[i * 3] = skinR;
-        colors[i * 3 + 1] = skinG;
-        colors[i * 3 + 2] = skinB;
+        // Uncovered areas: white (neutral multiply)
+        colors[i * 3] = 1;
+        colors[i * 3 + 1] = 1;
+        colors[i * 3 + 2] = 1;
       }
     }
 
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    if (heatmapMaterialRef.current) mesh.material = heatmapMaterialRef.current;
+
+    // Use skin material with vertex colors multiplied on top
+    const skinMat = skinMaterialRef.current as THREE.MeshPhysicalMaterial;
+    if (skinMat) {
+      const heatmapSkinMat = skinMat.clone();
+      heatmapSkinMat.vertexColors = true;
+      mesh.material = heatmapSkinMat;
+    }
   }, [heatmapEnabled, garmentType, garmentSize, fitPreference, inputs]);
 
   // Animation
