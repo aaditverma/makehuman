@@ -31,7 +31,7 @@ export function BodyModel() {
   const targetHeightScale = useRef(1);
   const currentWidthScale = useRef(1);
   const targetWidthScale = useRef(1);
-  const skinMaterialRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
+  const skinMaterialRef = useRef<THREE.Material | null>(null);
   const heatmapMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
   const bodyHeightRange = useRef<{ min: number; max: number }>({ min: 0, max: 1.73 });
 
@@ -40,53 +40,46 @@ export function BodyModel() {
   useEffect(() => {
     if (!groupRef.current) return;
 
-    // Skin material with baked texture
-    const textureLoader = new THREE.TextureLoader();
-    const skinTex = textureLoader.load('/models/textures/skin_diffuse.png');
-    skinTex.colorSpace = THREE.SRGBColorSpace;
-    skinTex.flipY = false; // GLB convention
-
-    const skinMaterial = new THREE.MeshPhysicalMaterial({
-      map: skinTex,
-      roughness: 0.65,
-      metalness: 0.0,
-      envMapIntensity: 0.3,
-      flatShading: false,
-      sheen: 0.15,
-      sheenRoughness: 0.5,
-      sheenColor: new THREE.Color(0.7, 0.5, 0.4),
-      vertexColors: false,
-    });
-    skinMaterialRef.current = skinMaterial;
-
-    // Heatmap material — uses vertex colors
-    const heatmapMat = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      transparent: false,
-    });
-    heatmapMaterialRef.current = heatmapMat;
-
     let foundMesh: THREE.Mesh | null = null;
 
     clonedScene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.castShadow = true;
         child.receiveShadow = true;
-        child.material = skinMaterial;
+
+        // Use the GLB material (has skin texture) — enhance it
+        const existingMat = child.material as THREE.MeshStandardMaterial;
+        if (existingMat && existingMat.map) {
+          const skinMat = new THREE.MeshPhysicalMaterial({
+            map: existingMat.map,
+            normalMap: existingMat.normalMap,
+            roughness: 0.6,
+            metalness: 0.0,
+            envMapIntensity: 0.4,
+            sheen: 0.12,
+            sheenRoughness: 0.5,
+            sheenColor: new THREE.Color(0.7, 0.5, 0.4),
+          });
+          child.material = skinMat;
+          skinMaterialRef.current = skinMat;
+        }
+
         if (child.morphTargetDictionary && child.morphTargetInfluences) {
           foundMesh = child;
           const names = Object.keys(child.morphTargetDictionary);
           morphNamesRef.current = names;
           currentInfluences.current = new Array(names.length).fill(0);
           targetInfluences.current = new Array(names.length).fill(0);
-          console.log(`[BodyModel] Morph targets: ${names.length}`, names);
         }
       }
     });
 
     meshRef.current = foundMesh;
 
-    // Compute body height range for heatmap mapping
+    // Heatmap material
+    heatmapMaterialRef.current = new THREE.MeshBasicMaterial({ vertexColors: true });
+
+    // Body height range
     if (foundMesh) {
       const geo = (foundMesh as THREE.Mesh).geometry as THREE.BufferGeometry;
       const pos = geo.attributes.position;
@@ -113,7 +106,7 @@ export function BodyModel() {
     return () => { groupRef.current?.remove(clonedScene); };
   }, [clonedScene]);
 
-  // Convert inputs → morph influences (or use overrides)
+  // Morph influences
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh?.morphTargetDictionary) return;
@@ -123,27 +116,22 @@ export function BodyModel() {
       targetInfluences.current[i] = morphs[name] ?? 0;
     });
 
-    // Height scaling: scale Y for height, and slightly scale X/Z inversely
-    // so a shorter person looks proportionally stockier, not just a shrunken version
     const heightRatio = inputs.heightCm / 175;
-    // Inverse width compensation: shorter = slightly wider
     const widthCompensation = 1 + (1 - heightRatio) * 0.3;
     targetHeightScale.current = heightRatio;
     targetWidthScale.current = widthCompensation;
   }, [inputs, morphOverrides]);
 
-  // Apply/remove heatmap
+  // Heatmap
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
 
     if (!heatmapEnabled || garmentType === 'none') {
-      // Restore skin material
       if (skinMaterialRef.current) mesh.material = skinMaterialRef.current;
       return;
     }
 
-    // Compute body measurements
     const measurements = estimatedMeasurements(inputs);
     const heatmap = computeHeatmap(garmentType, garmentSize, fitPreference, measurements);
     if (!heatmap) {
@@ -151,7 +139,6 @@ export function BodyModel() {
       return;
     }
 
-    // Create vertex colors
     const geometry = mesh.geometry;
     const pos = geometry.attributes.position;
     const count = pos.count;
@@ -159,7 +146,6 @@ export function BodyModel() {
     const hRange = hMax - hMin;
 
     const colors = new Float32Array(count * 3);
-    // Base skin color for uncovered areas
     const skinR = 0.62, skinG = 0.44, skinB = 0.35;
 
     for (let i = 0; i < count; i++) {
@@ -187,27 +173,22 @@ export function BodyModel() {
     if (heatmapMaterialRef.current) mesh.material = heatmapMaterialRef.current;
   }, [heatmapEnabled, garmentType, garmentSize, fitPreference, inputs]);
 
-  // Smooth animation
+  // Animation
   useFrame((_, delta) => {
     const mesh = meshRef.current;
     if (!mesh?.morphTargetInfluences) return;
     const dt = Math.min(delta, 0.05);
 
-    // Smooth height and width scale
     currentHeightScale.current = damp(currentHeightScale.current, targetHeightScale.current, SMOOTH, dt);
     currentWidthScale.current = damp(currentWidthScale.current, targetWidthScale.current, SMOOTH, dt);
-    const h = currentHeightScale.current;
-    const w = currentWidthScale.current;
-    groupRef.current.scale.set(w, h, w);
+    groupRef.current.scale.set(currentWidthScale.current, currentHeightScale.current, currentWidthScale.current);
 
     for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
       const cur = currentInfluences.current[i] ?? 0;
       const tgt = targetInfluences.current[i] ?? 0;
       const next = damp(cur, tgt, SMOOTH, dt);
       currentInfluences.current[i] = next;
-      // Cap individual morphs AND limit total combined influence
-      const cappedNext = Math.min(next, 1.0);
-      mesh.morphTargetInfluences[i] = cappedNext;
+      mesh.morphTargetInfluences[i] = Math.min(next, 1.0);
     }
   });
 

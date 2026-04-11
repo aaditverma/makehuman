@@ -71,11 +71,14 @@ print("Subdividing mesh...")
 bpy.context.view_layer.objects.active = mesh_obj
 mesh_obj.select_set(True)
 sub = mesh_obj.modifiers.new(name="Sub", type='SUBSURF')
-sub.levels = 1
-sub.render_levels = 1
+sub.levels = 2
+sub.render_levels = 2
 bpy.ops.object.modifier_apply(modifier=sub.name)
 bpy.ops.object.shade_smooth()
 print(f"  Now {len(mesh_obj.data.vertices)} vertices")
+
+# Keep the existing skin texture material (don't paint vertex colors)
+print("  Preserving skin texture material")
 
 verts = mesh_obj.data.vertices
 coords = [(v.co.x, v.co.y, v.co.z) for v in verts]
@@ -637,7 +640,7 @@ bpy.ops.export_scene.gltf(
     filepath=DST, export_format='GLB', use_selection=True,
     export_apply=False, export_morph=True, export_morph_normal=False,
     export_morph_tangent=False, export_skins=False, export_animations=False,
-    export_yup=True, export_normals=True,
+    export_yup=True, export_normals=True, export_image_format='AUTO',
 )
 
 print(f"Exported: {DST}")
