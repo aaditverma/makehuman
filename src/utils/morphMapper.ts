@@ -112,28 +112,31 @@ export function inputsToMorphs(u: UserInputs): Record<string, number> {
     Heavier: clamp01(overallZ * 0.35),
     Thinner: clamp01(-overallZ * 0.35),
     Muscular: baseInfluence('Muscular', 1.0),
-    WiderShoulders: Math.min(zToMorph(shoulderZ, 0.5) + baseInfluence('WiderShoulders', 0.4), 1.0),
-    WiderHips: Math.min(zToMorph(hipZ, 0.5) + baseInfluence('WiderHips', 0.4), 1.0),
-    BiggerChest: Math.min(zToMorph(chestZ, 0.5) + baseInfluence('BiggerChest', 0.3), 1.0),
-    BiggerStomach: Math.min(zToMorph(waistZ, 0.5) + baseInfluence('BiggerStomach', 0.3), 1.0),
-    WiderBack: Math.min(zToMorph(chestZ, 0.4) + baseInfluence('WiderBack', 0.3), 1.0),
-    DeeperChest: Math.min(zToMorph(chestZ, 0.4) + baseInfluence('DeeperChest', 0.3), 1.0),
-    NarrowerWaist: Math.min(zToMorphNeg(waistZ, 0.4) + baseInfluence('NarrowerWaist', 0.4), 1.0),
-    ThickerNeck: Math.min(zToMorph(neckZ, 0.4) + baseInfluence('ThickerNeck', 0.3), 1.0),
-    ThickerUpperArms: Math.min(zToMorph(bicepZ, 0.5) + baseInfluence('ThickerUpperArms', 0.3), 1.0),
-    ThickerThighs: Math.min(zToMorph(thighZ, 0.5) + baseInfluence('ThickerThighs', 0.3), 1.0),
-    ThickerCalves: Math.min(zToMorph(calfZ, 0.4) + baseInfluence('ThickerCalves', 0.3), 1.0),
+
+    // Regional: max of data-driven OR body type (no stacking)
+    WiderShoulders: Math.min(Math.max(zToMorph(shoulderZ, 0.5), baseInfluence('WiderShoulders', 0.5)), 1.0),
+    WiderHips: Math.min(Math.max(zToMorph(hipZ, 0.5), baseInfluence('WiderHips', 0.5)), 1.0),
+    BiggerChest: Math.min(Math.max(zToMorph(chestZ, 0.5), baseInfluence('BiggerChest', 0.4)), 1.0),
+    BiggerStomach: Math.min(Math.max(zToMorph(waistZ, 0.5), baseInfluence('BiggerStomach', 0.4)), 1.0),
+    WiderBack: Math.min(Math.max(zToMorph(chestZ, 0.4), baseInfluence('WiderBack', 0.4)), 1.0),
+    DeeperChest: Math.min(Math.max(zToMorph(chestZ, 0.4), baseInfluence('DeeperChest', 0.4)), 1.0),
+    NarrowerWaist: Math.min(Math.max(zToMorphNeg(waistZ, 0.4), baseInfluence('NarrowerWaist', 0.5)), 1.0),
+    ThickerNeck: Math.min(Math.max(zToMorph(neckZ, 0.4), baseInfluence('ThickerNeck', 0.4)), 1.0),
+    ThickerUpperArms: Math.min(Math.max(zToMorph(bicepZ, 0.5), baseInfluence('ThickerUpperArms', 0.4)), 1.0),
+    ThickerThighs: Math.min(Math.max(zToMorph(thighZ, 0.5), baseInfluence('ThickerThighs', 0.4)), 1.0),
+    ThickerCalves: Math.min(Math.max(zToMorph(calfZ, 0.4), baseInfluence('ThickerCalves', 0.4)), 1.0),
+
     LongerLegs: zToMorph(inseamZ, 0.3),
     LongerArms: 0,
     LongerTorso: zToMorphNeg(inseamZ, 0.3),
 
-    // Fat deposit morphs — activate progressively at higher BMIs
-    BellyPouch: clamp01((bmi - 28) / 10),       // starts at BMI 28, full at 38
-    LoveHandles: clamp01((bmi - 30) / 12),       // starts at BMI 30
-    BackFat: clamp01((bmi - 32) / 12),            // starts at BMI 32
-    UpperArmSag: clamp01((bmi - 30) / 15),        // subtle, starts at BMI 30
-    DoubleChin: clamp01((bmi - 32) / 15),         // starts at BMI 32
-    InnerThighFat: clamp01((bmi - 28) / 12),      // starts at BMI 28
+    // Fat deposits: BMI-driven only
+    BellyPouch: clamp01((bmi - 28) / 10),
+    LoveHandles: clamp01((bmi - 30) / 12),
+    BackFat: clamp01((bmi - 32) / 12),
+    UpperArmSag: clamp01((bmi - 30) / 15),
+    DoubleChin: clamp01((bmi - 32) / 15),
+    InnerThighFat: clamp01((bmi - 28) / 12),
   };
 }
 

@@ -1,8 +1,8 @@
 """
-Blender script: Generate a procedural skin texture for the MakeHuman model
-and bake it to a UV-mapped image texture.
+Generate a skin color texture using vertex painting based on body regions,
+then bake to an image using the existing UV map.
 """
-import bpy, os, math
+import bpy, os, math, mathutils
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEX_PATH = os.path.join(BASE_DIR, "public", "models", "textures", "skin_diffuse.png")
@@ -13,124 +13,148 @@ bpy.ops.import_scene.fbx(filepath=os.path.join(BASE_DIR, "public", "models", "ma
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
+# Fix orientation
+rot = mathutils.Matrix.Rotation(-math.pi/2, 4, 'X')
 mesh_obj = None
-max_verts = 0
 for obj in bpy.context.scene.objects:
-    if obj.type == 'MESH' and len(obj.data.vertices) > max_verts:
-        max_verts = len(obj.data.vertices)
+    if obj.type == 'MESH' and len(obj.data.vertices) > 1000:
         mesh_obj = obj
+        for v in obj.data.vertices:
+            v.co = rot @ v.co
+        obj.data.update()
+        break
 
 if not mesh_obj:
     raise RuntimeError("No mesh")
 
-# Deselect everything, select only our mesh
-bpy.ops.object.select_all(action='DESELECT')
-mesh_obj.select_set(True)
+print(f"Mesh: {mesh_obj.name}, verts: {len(mesh_obj.data.vertices)}")
+
 bpy.context.view_layer.objects.active = mesh_obj
+mesh_obj.select_set(True)
 
-print(f"Mesh: {mesh_obj.name}")
+# Get height range
+verts = mesh_obj.data.vertices
+h_min = min(v.co.z for v in verts)
+h_max = max(v.co.z for v in verts)
+h_range = h_max - h_min
 
-# Check if mesh has UVs
-if not mesh_obj.data.uv_layers:
-    print("No UV map found, creating smart UV project...")
-    bpy.context.view_layer.objects.active = mesh_obj
-    mesh_obj.select_set(True)
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.uv.smart_project(angle_limit=66, island_margin=0.02)
-    bpy.ops.object.mode_set(mode='OBJECT')
-    print("UV map created")
-else:
-    print(f"UV map exists: {mesh_obj.data.uv_layers[0].name}")
+def nh(v):
+    return (v.co.z - h_min) / max(0.0001, h_range)
 
-# Create material with procedural skin nodes
-mat = bpy.data.materials.new(name="SkinMaterial")
+# Create vertex color layer
+if not mesh_obj.data.color_attributes:
+    mesh_obj.data.color_attributes.new(name="SkinColor", type='BYTE_COLOR', domain='CORNER')
+
+color_attr = mesh_obj.data.color_attributes["SkinColor"]
+
+# Base skin color (warm medium tone)
+base_r, base_g, base_b = 0.65, 0.48, 0.38
+
+# Paint vertex colors based on body region
+for poly in mesh_obj.data.polygons:
+    for loop_idx in poly.loop_indices:
+        vert_idx = mesh_obj.data.loops[loop_idx].vertex_index
+        v = verts[vert_idx]
+        h = nh(v)
+        d = math.sqrt(v.co.x**2 + v.co.y**2)
+        
+        r, g, b = base_r, base_g, base_b
+        
+        # Slightly darker at joints/creases
+        # Elbows (h ~0.55, far from center)
+        if h > 0.50 and h < 0.60 and d > 0.15:
+            r *= 0.92; g *= 0.90; b *= 0.88
+        
+        # Knees (h ~0.27)
+        if h > 0.24 and h < 0.30:
+            r *= 0.93; g *= 0.91; b *= 0.89
+        
+        # Slightly lighter on chest/belly front
+        if h > 0.50 and h < 0.70 and v.co.y > 0.05:
+            r *= 1.04; g *= 1.02; b *= 1.0
+        
+        # Slightly pinker on face
+        if h > 0.85:
+            r *= 1.05; g *= 0.98; b *= 0.95
+        
+        # Darker on back of neck
+        if h > 0.80 and h < 0.88 and v.co.y < -0.02:
+            r *= 0.90; g *= 0.87; b *= 0.85
+        
+        # Slightly darker hands/feet
+        if h < 0.04 or (h > 0.38 and h < 0.52 and d > 0.20):
+            r *= 0.94; g *= 0.91; b *= 0.88
+        
+        # Palms lighter (front of hands)
+        if h > 0.38 and h < 0.52 and d > 0.22 and v.co.y > 0:
+            r *= 1.08; g *= 1.06; b *= 1.04
+        
+        # Nipple area slightly darker
+        if h > 0.64 and h < 0.68 and abs(v.co.x) > 0.06 and abs(v.co.x) < 0.10 and v.co.y > 0.05:
+            r *= 0.85; g *= 0.78; b *= 0.75
+        
+        # Clamp
+        r = min(1.0, max(0.0, r))
+        g = min(1.0, max(0.0, g))
+        b = min(1.0, max(0.0, b))
+        
+        color_attr.data[loop_idx].color = (r, g, b, 1.0)
+
+print("Vertex colors painted")
+
+# Create material that uses vertex colors
+mat = bpy.data.materials.new(name="SkinMat")
 mat.use_nodes = True
 nodes = mat.node_tree.nodes
 links = mat.node_tree.links
 nodes.clear()
 
-# Output
 output = nodes.new('ShaderNodeOutputMaterial')
-output.location = (800, 0)
+output.location = (400, 0)
 
-# Principled BSDF
 bsdf = nodes.new('ShaderNodeBsdfPrincipled')
-bsdf.location = (400, 0)
+bsdf.location = (0, 0)
+bsdf.inputs['Roughness'].default_value = 0.6
 links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
 
-# Base skin color
-base_color = nodes.new('ShaderNodeRGB')
-base_color.location = (-400, 200)
-base_color.outputs[0].default_value = (0.72, 0.52, 0.40, 1.0)  # warm medium skin
+# Vertex color node
+vcol = nodes.new('ShaderNodeVertexColor')
+vcol.location = (-300, 0)
+vcol.layer_name = "SkinColor"
+links.new(vcol.outputs['Color'], bsdf.inputs['Base Color'])
 
-# Noise for subtle skin variation
-noise = nodes.new('ShaderNodeTexNoise')
-noise.location = (-600, 0)
-noise.inputs['Scale'].default_value = 15.0
-noise.inputs['Detail'].default_value = 8.0
-noise.inputs['Roughness'].default_value = 0.6
-
-# Color ramp for skin variation
-ramp = nodes.new('ShaderNodeValToRGB')
-ramp.location = (-400, 0)
-ramp.color_ramp.elements[0].position = 0.35
-ramp.color_ramp.elements[0].color = (0.65, 0.45, 0.35, 1.0)  # slightly darker
-ramp.color_ramp.elements[1].position = 0.65
-ramp.color_ramp.elements[1].color = (0.78, 0.58, 0.46, 1.0)  # slightly lighter
-
-links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
-
-# Mix base color with noise variation
-mix = nodes.new('ShaderNodeMixRGB')
-mix.location = (-100, 100)
-mix.blend_type = 'MIX'
-mix.inputs['Fac'].default_value = 0.3  # subtle variation
-links.new(base_color.outputs[0], mix.inputs['Color1'])
-links.new(ramp.outputs['Color'], mix.inputs['Color2'])
-links.new(mix.outputs['Color'], bsdf.inputs['Base Color'])
-
-# Subsurface
-bsdf.inputs['Subsurface Weight'].default_value = 0.15
-bsdf.inputs['Subsurface Radius'].default_value = (0.8, 0.4, 0.2)
-
-# Roughness
-bsdf.inputs['Roughness'].default_value = 0.55
-
-# Assign material
 mesh_obj.data.materials.clear()
 mesh_obj.data.materials.append(mat)
 
-# Create image to bake to
-img_size = 2048
-img = bpy.data.images.new("SkinBake", width=img_size, height=img_size)
+# Create bake target image
+img = bpy.data.images.new("SkinBake", width=2048, height=2048)
 
-# Add image texture node for baking target
 img_node = nodes.new('ShaderNodeTexImage')
-img_node.location = (-600, -300)
+img_node.location = (-300, -300)
 img_node.image = img
 img_node.select = True
 nodes.active = img_node
 
 # Bake
-bpy.context.view_layer.objects.active = mesh_obj
-mesh_obj.select_set(True)
-
 bpy.context.scene.render.engine = 'CYCLES'
-bpy.context.scene.cycles.samples = 32
+bpy.context.scene.cycles.samples = 16
 bpy.context.scene.cycles.bake_type = 'DIFFUSE'
 bpy.context.scene.render.bake.use_pass_direct = False
 bpy.context.scene.render.bake.use_pass_indirect = False
 bpy.context.scene.render.bake.use_pass_color = True
 
-print("Baking skin texture...")
+# Deselect everything except our mesh
+bpy.ops.object.select_all(action='DESELECT')
+mesh_obj.select_set(True)
+bpy.context.view_layer.objects.active = mesh_obj
+
+print("Baking vertex colors to texture...")
 bpy.ops.object.bake(type='DIFFUSE')
 
-# Save
 os.makedirs(os.path.dirname(TEX_PATH), exist_ok=True)
 img.filepath_raw = TEX_PATH
 img.file_format = 'PNG'
 img.save()
 
-print(f"Saved texture to {TEX_PATH}")
+print(f"Saved to {TEX_PATH}")
 print("Done!")

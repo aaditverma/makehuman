@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import { useBodyStore, type Gender, type BodyType } from '../../stores/bodyStore';
+import { useBodyStore, type Gender, type BodyType, type GarmentType, type FitPreference } from '../../stores/bodyStore';
 import { estimatedMeasurements } from '../../utils/morphMapper';
+import { getGarmentOptions } from '../../utils/heatmapEngine';
 
 const bodyTypes: { value: BodyType; label: string }[] = [
   { value: 'slim', label: 'Slim' },
@@ -12,7 +13,9 @@ const bodyTypes: { value: BodyType; label: string }[] = [
 
 export function ControlPanel() {
   const { inputs, setInput, reset } = useBodyStore();
+  const { heatmapEnabled, setHeatmapEnabled, garmentType, setGarmentType, garmentSize, setGarmentSize, fitPreference, setFitPreference } = useBodyStore();
   const estimated = useMemo(() => estimatedMeasurements(inputs), [inputs]);
+  const garmentOptions = useMemo(() => getGarmentOptions(), []);
 
   return (
     <div className="w-80 h-full bg-gray-900/95 border-l border-gray-700 flex flex-col">
@@ -20,6 +23,82 @@ export function ControlPanel() {
       <div className="p-4 border-b border-gray-700">
         <h1 className="text-xl font-bold text-white mb-1">Body Profile</h1>
         <p className="text-xs text-gray-400">Enter your details to shape the avatar</p>
+      </div>
+
+      {/* Heatmap Controls */}
+      <div className="p-4 border-b border-gray-700 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-gray-300">Fit Heatmap</h2>
+          <button
+            onClick={() => setHeatmapEnabled(!heatmapEnabled)}
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+              heatmapEnabled
+                ? 'bg-emerald-600 text-white'
+                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+            }`}
+          >
+            {heatmapEnabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+
+        {heatmapEnabled && (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-xs text-gray-300">
+                Garment
+                <select
+                  value={garmentType}
+                  onChange={(e) => {
+                    const newType = e.target.value as GarmentType;
+                    setGarmentType(newType);
+                    // Auto-select first size of new garment
+                    const newGarment = garmentOptions.find((g) => g.id === newType);
+                    if (newGarment && newGarment.sizes.length > 0) {
+                      const midIdx = Math.floor(newGarment.sizes.length / 2);
+                      setGarmentSize(newGarment.sizes[midIdx]);
+                    }
+                  }}
+                  className="mt-1 w-full rounded bg-gray-800 border border-gray-700 px-2 py-1.5 text-xs text-gray-100"
+                >
+                  {garmentOptions.map((g) => (
+                    <option key={g.id} value={g.id}>{g.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-gray-300">
+                Size
+                <select
+                  value={garmentSize}
+                  onChange={(e) => setGarmentSize(e.target.value)}
+                  className="mt-1 w-full rounded bg-gray-800 border border-gray-700 px-2 py-1.5 text-xs text-gray-100"
+                >
+                  {(garmentOptions.find((g) => g.id === garmentType)?.sizes ?? []).map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label className="text-xs text-gray-300">
+              Fit Style
+              <select
+                value={fitPreference}
+                onChange={(e) => setFitPreference(e.target.value as FitPreference)}
+                className="mt-1 w-full rounded bg-gray-800 border border-gray-700 px-2 py-1.5 text-xs text-gray-100"
+              >
+                <option value="compression">Compression fit</option>
+                <option value="slim">Slim fit</option>
+                <option value="regular">Regular fit</option>
+                <option value="relaxed">Relaxed fit</option>
+                <option value="oversized">Oversized fit</option>
+              </select>
+            </label>
+            <div className="flex gap-2 text-[9px]">
+              <span className="px-1.5 py-0.5 rounded bg-red-500/30 text-red-200">Tight</span>
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-200">Balanced</span>
+              <span className="px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-200">Loose</span>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-5">

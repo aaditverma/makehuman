@@ -30,19 +30,34 @@ export const defaultInputs: UserInputs = {
   inseamCm: null,
 };
 
+export type FitPreference = 'compression' | 'slim' | 'regular' | 'relaxed' | 'oversized';
+export type GarmentType = 'tee' | 'vneck-tee' | 'oxford' | 'slim-jeans' | 'straight-jeans' | 'none';
+
 interface BodyStore {
   inputs: UserInputs;
-  morphOverrides: Record<string, number> | null; // null = use computed, object = direct control
+  morphOverrides: Record<string, number> | null;
+  heatmapEnabled: boolean;
+  garmentType: GarmentType;
+  garmentSize: string;
+  fitPreference: FitPreference;
   setInput: <K extends keyof UserInputs>(key: K, value: UserInputs[K]) => void;
   setInputs: (partial: Partial<UserInputs>) => void;
   setMorphOverride: (name: string, value: number) => void;
   clearMorphOverrides: () => void;
+  setHeatmapEnabled: (v: boolean) => void;
+  setGarmentType: (v: GarmentType) => void;
+  setGarmentSize: (v: string) => void;
+  setFitPreference: (v: FitPreference) => void;
   reset: () => void;
 }
 
 export const useBodyStore = create<BodyStore>((set) => ({
   inputs: { ...defaultInputs },
   morphOverrides: null,
+  heatmapEnabled: false,
+  garmentType: 'tee',
+  garmentSize: 'M',
+  fitPreference: 'regular',
 
   setInput: (key, value) =>
     set((s) => ({ inputs: { ...s.inputs, [key]: value } })),
@@ -56,6 +71,10 @@ export const useBodyStore = create<BodyStore>((set) => ({
     })),
 
   clearMorphOverrides: () => set({ morphOverrides: null }),
+  setHeatmapEnabled: (v) => set({ heatmapEnabled: v }),
+  setGarmentType: (v) => set({ garmentType: v }),
+  setGarmentSize: (v) => set({ garmentSize: v }),
+  setFitPreference: (v) => set({ fitPreference: v }),
 
-  reset: () => set({ inputs: { ...defaultInputs }, morphOverrides: null }),
+  reset: () => set({ inputs: { ...defaultInputs }, morphOverrides: null, heatmapEnabled: false }),
 }));

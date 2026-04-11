@@ -3,7 +3,8 @@ import { useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useBodyStore } from '../stores/bodyStore';
-import { inputsToMorphs } from '../utils/morphMapper';
+import { inputsToMorphs, estimatedMeasurements } from '../utils/morphMapper';
+import { computeHeatmap, fitScoreToColor } from '../utils/heatmapEngine';
 
 const damp = (cur: number, tgt: number, spd: number, dt: number) =>
   cur + (tgt - cur) * (1 - Math.exp(-spd * dt));
@@ -16,6 +17,10 @@ export function BodyModel() {
   const groupRef = useRef<THREE.Group>(null!);
   const inputs = useBodyStore((s) => s.inputs);
   const morphOverrides = useBodyStore((s) => s.morphOverrides);
+  const heatmapEnabled = useBodyStore((s) => s.heatmapEnabled);
+  const garmentType = useBodyStore((s) => s.garmentType);
+  const garmentSize = useBodyStore((s) => s.garmentSize);
+  const fitPreference = useBodyStore((s) => s.fitPreference);
   const { scene } = useGLTF('/models/human-male.glb');
 
   const meshRef = useRef<THREE.Mesh | null>(null);
@@ -26,25 +31,40 @@ export function BodyModel() {
   const targetHeightScale = useRef(1);
   const currentWidthScale = useRef(1);
   const targetWidthScale = useRef(1);
+  const skinMaterialRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
+  const heatmapMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
+  const bodyHeightRange = useRef<{ min: number; max: number }>({ min: 0, max: 1.73 });
 
   const clonedScene = useMemo(() => scene.clone(true), [scene]);
 
   useEffect(() => {
     if (!groupRef.current) return;
 
-    // Clean skin material — no texture, just well-tuned PBR
+    // Skin material with baked texture
+    const textureLoader = new THREE.TextureLoader();
+    const skinTex = textureLoader.load('/models/textures/skin_diffuse.png');
+    skinTex.colorSpace = THREE.SRGBColorSpace;
+    skinTex.flipY = false; // GLB convention
+
     const skinMaterial = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(0.62, 0.44, 0.35),
-      roughness: 0.7,
+      map: skinTex,
+      roughness: 0.65,
       metalness: 0.0,
       envMapIntensity: 0.3,
       flatShading: false,
       sheen: 0.15,
       sheenRoughness: 0.5,
       sheenColor: new THREE.Color(0.7, 0.5, 0.4),
-      clearcoat: 0.02,
-      clearcoatRoughness: 0.6,
+      vertexColors: false,
     });
+    skinMaterialRef.current = skinMaterial;
+
+    // Heatmap material — uses vertex colors
+    const heatmapMat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: false,
+    });
+    heatmapMaterialRef.current = heatmapMat;
 
     let foundMesh: THREE.Mesh | null = null;
 
@@ -65,6 +85,19 @@ export function BodyModel() {
     });
 
     meshRef.current = foundMesh;
+
+    // Compute body height range for heatmap mapping
+    if (foundMesh) {
+      const geo = (foundMesh as THREE.Mesh).geometry as THREE.BufferGeometry;
+      const pos = geo.attributes.position;
+      let minY = Infinity, maxY = -Infinity;
+      for (let i = 0; i < pos.count; i++) {
+        const y = pos.getY(i);
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      bodyHeightRange.current = { min: minY, max: maxY };
+    }
 
     // Position feet on ground
     const box = new THREE.Box3().setFromObject(clonedScene);
@@ -98,6 +131,61 @@ export function BodyModel() {
     targetHeightScale.current = heightRatio;
     targetWidthScale.current = widthCompensation;
   }, [inputs, morphOverrides]);
+
+  // Apply/remove heatmap
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    if (!heatmapEnabled || garmentType === 'none') {
+      // Restore skin material
+      if (skinMaterialRef.current) mesh.material = skinMaterialRef.current;
+      return;
+    }
+
+    // Compute body measurements
+    const measurements = estimatedMeasurements(inputs);
+    const heatmap = computeHeatmap(garmentType, garmentSize, fitPreference, measurements);
+    if (!heatmap) {
+      if (skinMaterialRef.current) mesh.material = skinMaterialRef.current;
+      return;
+    }
+
+    // Create vertex colors
+    const geometry = mesh.geometry;
+    const pos = geometry.attributes.position;
+    const count = pos.count;
+    const { min: hMin, max: hMax } = bodyHeightRange.current;
+    const hRange = hMax - hMin;
+
+    const colors = new Float32Array(count * 3);
+    // Base skin color for uncovered areas
+    const skinR = 0.62, skinG = 0.44, skinB = 0.35;
+
+    for (let i = 0; i < count; i++) {
+      const y = pos.getY(i);
+      const x = pos.getX(i);
+      const z = pos.getZ(i);
+      const normalizedH = hRange > 0 ? (y - hMin) / hRange : 0.5;
+      const distFromCenter = Math.sqrt(x * x + z * z);
+
+      const { covered, fitScore } = heatmap.getVertexFit(normalizedH, Math.abs(x), z, distFromCenter);
+
+      if (covered) {
+        const [r, g, b] = fitScoreToColor(fitScore);
+        colors[i * 3] = r;
+        colors[i * 3 + 1] = g;
+        colors[i * 3 + 2] = b;
+      } else {
+        colors[i * 3] = skinR;
+        colors[i * 3 + 1] = skinG;
+        colors[i * 3 + 2] = skinB;
+      }
+    }
+
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    if (heatmapMaterialRef.current) mesh.material = heatmapMaterialRef.current;
+  }, [heatmapEnabled, garmentType, garmentSize, fitPreference, inputs]);
 
   // Smooth animation
   useFrame((_, delta) => {

@@ -133,8 +133,11 @@ def is_crotch(co):
     return h > 0.40 and h < 0.52 and d < 0.12
 
 def is_hand(co):
-    """Disabled — hands not isolated."""
-    return False
+    """Hand vertices: at arm height, very far from body center."""
+    h = nh(co)
+    d = dist(co)
+    # Hands are the furthest points from center at mid-height
+    return h > 0.35 and h < 0.55 and d > 0.20
 
 def extremity_dampen(co):
     """Returns dampening factor for hands, feet, head, crotch. 1.0 = no dampen."""
@@ -142,7 +145,7 @@ def extremity_dampen(co):
     if h < 0.05 or h > 0.85:
         return 0.1  # head and feet
     if is_hand(co):
-        return 0.1  # hands
+        return 0.3  # hands get 30% effect
     if is_crotch(co):
         d = dist(co)
         h_factor = 1.0 - smooth(0.46, 0.03, h)
