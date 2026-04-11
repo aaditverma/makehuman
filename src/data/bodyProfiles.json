@@ -1,0 +1,138 @@
+{
+  "meta": {
+    "version": "2.1",
+    "sources": [
+      "NHANES 2021-2023 Anthropometric Reference Data (CDC)",
+      "Bozeman et al. 2012 - Predicting WC from BMI (BMC Med Res Methodol 12:115)",
+      "WHO MONICA Project - Waist/Hip across 19 populations"
+    ],
+    "note": "All measurements in cm, weight in kg. Content rephrased for compliance."
+  },
+  "genderDefaults": {
+    "male": {
+      "avgHeightCm": 175.0, "avgWeightKg": 83.0, "avgBmi": 27.1,
+      "avgWaistCm": 98.0, "avgHipCm": 103.0, "avgChestCm": 101.0,
+      "avgInseamRatio": 0.45, "avgShoulderCm": 46.0, "avgNeckCm": 39.0,
+      "avgBicepCm": 33.0, "avgThighCm": 56.0,
+      "waistRegression": { "intercept": 22.613, "bmiCoeff": 2.521, "ageCoeff": 0.158 },
+      "hipRegression": { "intercept": 56.0, "bmiCoeff": 1.55, "ageCoeff": 0.06 },
+      "chestRegression": { "intercept": 55.0, "bmiCoeff": 1.45, "heightCoeff": 0.08, "heightRef": 170 }
+    },
+    "female": {
+      "avgHeightCm": 161.3, "avgWeightKg": 77.8, "avgBmi": 29.6,
+      "avgWaistCm": 94.0, "avgHipCm": 108.0, "avgChestCm": 97.0,
+      "avgInseamRatio": 0.44, "avgShoulderCm": 40.0, "avgNeckCm": 34.0,
+      "avgBicepCm": 30.0, "avgThighCm": 58.0,
+      "waistRegression": { "intercept": 28.819, "bmiCoeff": 2.218, "ageThreshold": 35, "ageShift": -3.689, "ageSlopeOver35": 0.126 },
+      "hipRegression": { "intercept": 48.0, "bmiCoeff": 1.88, "ageCoeff": 0.08 },
+      "chestRegression": { "intercept": 50.0, "bmiCoeff": 1.55, "heightCoeff": 0.06, "heightRef": 162 }
+    }
+  },
+  "bodyTypes": {
+    "slim": {
+      "label": "Slim", "description": "Lean frame, narrower proportions",
+      "measurementOffsets": {
+        "male":   { "waistCm": -10, "hipCm": -6, "chestCm": -8, "shoulderCm": -3, "neckCm": -3, "bicepCm": -4, "thighCm": -6 },
+        "female": { "waistCm": -8,  "hipCm": -5, "chestCm": -7, "shoulderCm": -2, "neckCm": -2, "bicepCm": -3, "thighCm": -5 }
+      },
+      "fatDistribution": { "torso": 0.3, "stomach": 0.15, "hips": 0.2, "thighs": 0.15, "arms": 0.1, "overall": 0.1 },
+      "morphResponses": {
+        "Heavier": { "sensitivity": 0.6, "maxInfluence": 0.5 }, "Thinner": { "sensitivity": 0.9, "maxInfluence": 0.8 },
+        "Muscular": { "sensitivity": 0.0, "maxInfluence": 0.0 },
+        "WiderShoulders": { "sensitivity": 0.3, "maxInfluence": 0.3 }, "WiderHips": { "sensitivity": 0.3, "maxInfluence": 0.3 },
+        "BiggerChest": { "sensitivity": 0.3, "maxInfluence": 0.3 }, "BiggerStomach": { "sensitivity": 0.2, "maxInfluence": 0.2 },
+        "ThickerNeck": { "sensitivity": 0.2, "maxInfluence": 0.2 },
+        "ThickerUpperArms": { "sensitivity": 0.2, "maxInfluence": 0.2 },
+        "ThickerThighs": { "sensitivity": 0.2, "maxInfluence": 0.2 },
+        "ThickerCalves": { "sensitivity": 0.2, "maxInfluence": 0.2 },
+        "WiderBack": { "sensitivity": 0.2, "maxInfluence": 0.2 },
+        "DeeperChest": { "sensitivity": 0.2, "maxInfluence": 0.2 },
+        "NarrowerWaist": { "sensitivity": 0.6, "maxInfluence": 0.5 }
+      }
+    },
+    "average": {
+      "label": "Average", "description": "Typical proportions",
+      "measurementOffsets": {
+        "male":   { "waistCm": 0, "hipCm": 0, "chestCm": 0, "shoulderCm": 0, "neckCm": 0, "bicepCm": 0, "thighCm": 0 },
+        "female": { "waistCm": 0, "hipCm": 0, "chestCm": 0, "shoulderCm": 0, "neckCm": 0, "bicepCm": 0, "thighCm": 0 }
+      },
+      "fatDistribution": { "torso": 0.35, "stomach": 0.25, "hips": 0.2, "thighs": 0.1, "arms": 0.05, "overall": 0.05 },
+      "morphResponses": {
+        "Heavier": { "sensitivity": 0.7, "maxInfluence": 0.7 }, "Thinner": { "sensitivity": 0.7, "maxInfluence": 0.7 },
+        "Muscular": { "sensitivity": 0.0, "maxInfluence": 0.0 },
+        "WiderShoulders": { "sensitivity": 0.4, "maxInfluence": 0.5 }, "WiderHips": { "sensitivity": 0.4, "maxInfluence": 0.5 },
+        "BiggerChest": { "sensitivity": 0.4, "maxInfluence": 0.5 }, "BiggerStomach": { "sensitivity": 0.4, "maxInfluence": 0.5 },
+        "ThickerNeck": { "sensitivity": 0.3, "maxInfluence": 0.4 },
+        "ThickerUpperArms": { "sensitivity": 0.3, "maxInfluence": 0.4 },
+        "ThickerThighs": { "sensitivity": 0.3, "maxInfluence": 0.4 },
+        "ThickerCalves": { "sensitivity": 0.3, "maxInfluence": 0.3 },
+        "WiderBack": { "sensitivity": 0.3, "maxInfluence": 0.4 },
+        "DeeperChest": { "sensitivity": 0.3, "maxInfluence": 0.4 },
+        "NarrowerWaist": { "sensitivity": 0.0, "maxInfluence": 0.0 }
+      }
+    },
+    "athletic": {
+      "label": "Athletic", "description": "Muscular build, broader shoulders",
+      "measurementOffsets": {
+        "male":   { "waistCm": -5, "hipCm": -2, "chestCm": 6, "shoulderCm": 4, "neckCm": 2, "bicepCm": 5, "thighCm": 4 },
+        "female": { "waistCm": -4, "hipCm": -1, "chestCm": 4, "shoulderCm": 3, "neckCm": 1, "bicepCm": 3, "thighCm": 3 }
+      },
+      "fatDistribution": { "torso": 0.2, "stomach": 0.1, "hips": 0.15, "thighs": 0.2, "arms": 0.2, "overall": 0.15 },
+      "morphResponses": {
+        "Heavier": { "sensitivity": 0.5, "maxInfluence": 0.4 }, "Thinner": { "sensitivity": 0.4, "maxInfluence": 0.3 },
+        "Muscular": { "sensitivity": 1.0, "maxInfluence": 0.8 },
+        "WiderShoulders": { "sensitivity": 0.8, "maxInfluence": 0.7 }, "WiderHips": { "sensitivity": 0.2, "maxInfluence": 0.3 },
+        "BiggerChest": { "sensitivity": 0.7, "maxInfluence": 0.7 }, "BiggerStomach": { "sensitivity": 0.15, "maxInfluence": 0.2 },
+        "ThickerNeck": { "sensitivity": 0.6, "maxInfluence": 0.6 },
+        "ThickerUpperArms": { "sensitivity": 0.8, "maxInfluence": 0.7 },
+        "ThickerThighs": { "sensitivity": 0.7, "maxInfluence": 0.6 },
+        "ThickerCalves": { "sensitivity": 0.5, "maxInfluence": 0.5 },
+        "WiderBack": { "sensitivity": 0.7, "maxInfluence": 0.7 },
+        "DeeperChest": { "sensitivity": 0.6, "maxInfluence": 0.6 },
+        "NarrowerWaist": { "sensitivity": 0.5, "maxInfluence": 0.5 }
+      }
+    },
+    "curvy": {
+      "label": "Curvy", "description": "Fuller hips and bust, defined waist",
+      "measurementOffsets": {
+        "male":   { "waistCm": -2, "hipCm": 5, "chestCm": 3, "shoulderCm": 0, "neckCm": 0, "bicepCm": 1, "thighCm": 5 },
+        "female": { "waistCm": -3, "hipCm": 8, "chestCm": 5, "shoulderCm": -1, "neckCm": 0, "bicepCm": 1, "thighCm": 6 }
+      },
+      "fatDistribution": { "torso": 0.2, "stomach": 0.15, "hips": 0.35, "thighs": 0.2, "arms": 0.05, "overall": 0.05 },
+      "morphResponses": {
+        "Heavier": { "sensitivity": 0.6, "maxInfluence": 0.6 }, "Thinner": { "sensitivity": 0.5, "maxInfluence": 0.5 },
+        "Muscular": { "sensitivity": 0.0, "maxInfluence": 0.0 },
+        "WiderShoulders": { "sensitivity": 0.3, "maxInfluence": 0.3 }, "WiderHips": { "sensitivity": 0.9, "maxInfluence": 0.8 },
+        "BiggerChest": { "sensitivity": 0.7, "maxInfluence": 0.7 }, "BiggerStomach": { "sensitivity": 0.3, "maxInfluence": 0.3 },
+        "ThickerNeck": { "sensitivity": 0.2, "maxInfluence": 0.3 },
+        "ThickerUpperArms": { "sensitivity": 0.3, "maxInfluence": 0.3 },
+        "ThickerThighs": { "sensitivity": 0.7, "maxInfluence": 0.7 },
+        "ThickerCalves": { "sensitivity": 0.4, "maxInfluence": 0.4 },
+        "WiderBack": { "sensitivity": 0.2, "maxInfluence": 0.3 },
+        "DeeperChest": { "sensitivity": 0.5, "maxInfluence": 0.5 },
+        "NarrowerWaist": { "sensitivity": 0.7, "maxInfluence": 0.7 }
+      }
+    },
+    "heavy": {
+      "label": "Heavy", "description": "Larger frame, more overall mass",
+      "measurementOffsets": {
+        "male":   { "waistCm": 12, "hipCm": 8, "chestCm": 8, "shoulderCm": 2, "neckCm": 3, "bicepCm": 4, "thighCm": 8 },
+        "female": { "waistCm": 10, "hipCm": 10, "chestCm": 7, "shoulderCm": 1, "neckCm": 2, "bicepCm": 3, "thighCm": 7 }
+      },
+      "fatDistribution": { "torso": 0.3, "stomach": 0.35, "hips": 0.15, "thighs": 0.1, "arms": 0.05, "overall": 0.05 },
+      "morphResponses": {
+        "Heavier": { "sensitivity": 1.0, "maxInfluence": 1.0 }, "Thinner": { "sensitivity": 0.3, "maxInfluence": 0.2 },
+        "Muscular": { "sensitivity": 0.1, "maxInfluence": 0.1 },
+        "WiderShoulders": { "sensitivity": 0.4, "maxInfluence": 0.5 }, "WiderHips": { "sensitivity": 0.6, "maxInfluence": 0.6 },
+        "BiggerChest": { "sensitivity": 0.5, "maxInfluence": 0.6 }, "BiggerStomach": { "sensitivity": 0.9, "maxInfluence": 0.9 },
+        "ThickerNeck": { "sensitivity": 0.5, "maxInfluence": 0.6 },
+        "ThickerUpperArms": { "sensitivity": 0.5, "maxInfluence": 0.5 },
+        "ThickerThighs": { "sensitivity": 0.6, "maxInfluence": 0.6 },
+        "ThickerCalves": { "sensitivity": 0.4, "maxInfluence": 0.5 },
+        "WiderBack": { "sensitivity": 0.5, "maxInfluence": 0.5 },
+        "DeeperChest": { "sensitivity": 0.4, "maxInfluence": 0.5 },
+        "NarrowerWaist": { "sensitivity": 0.0, "maxInfluence": 0.0 }
+      }
+    }
+  }
+}
