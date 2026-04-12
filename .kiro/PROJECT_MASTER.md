@@ -2,6 +2,24 @@
 
 > This is the single source of truth for the project. Read this file at the start of every new session.
 
+## How to Use This File
+
+**Purpose:** This is the cumulative project context doc. A new Kiro session only needs to read THIS file to have full context — no need to read individual handoff files.
+
+**At the START of every session:** Read `.kiro/PROJECT_MASTER.md`
+
+**At the END of every session, update this file with:**
+1. **What's Done** — Move completed items, add new completed features
+2. **Phases** — Update phase progress percentages and checkmarks
+3. **Miscellaneous Fixes & TODO** — Add new pending fixes, remove completed ones
+4. **Key Files** — Add any new files created, update descriptions if behavior changed
+5. **Coordinate System / Technical Reference** — Update if any technical details changed (thresholds, algorithms, etc.)
+6. **Session Handoff Index** — Add new row to the table
+7. **Session Timeline** — Add new session entry with bullet points of what was done
+8. **Git Workflow** — Commit and push at end of session
+
+**Also create:** `.kiro/SESSION_HANDOFF_XXX.md` (lightweight delta file — only what changed in that session, with serial number and date)
+
 ## The Product
 A web-based 3D body avatar that users can customize with their measurements, then visualize how clothing fits on their body using heatmaps. Designed to be embedded into shopping websites (Shopify) to reduce returns by showing fit before purchase.
 
@@ -21,14 +39,15 @@ A web-based 3D body avatar that users can customize with their measurements, the
 - **Blender path:** `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`
 
 ### Key Files
-- `src/components/BodyModel.tsx` — Three.js mesh, morph target animation, heatmap vertex coloring, reads vertex normals for arm detection
+- `src/components/BodyModel.tsx` — Three.js mesh, morph target animation, heatmap vertex coloring, reads vertex normals (X and Y) for arm detection, Laplacian color smoothing via smoothingEngine
 - `src/components/UI/ControlPanel.tsx` — All UI controls (body inputs, garment selection, heatmap toggle, direct morph sliders)
 - `src/components/Scene.tsx` — Three.js canvas, lighting, grid
 - `src/components/Controls.tsx` — OrbitControls camera
 - `src/components/Lighting.tsx` — Studio lighting setup
 - `src/stores/bodyStore.ts` — Zustand store (user inputs, morph overrides, heatmap state)
-- `src/utils/morphMapper.ts` — Converts user inputs → morph target influences using ANSUR II + NHANES ML model
-- `src/utils/heatmapEngine.ts` — Garment coverage detection + fit score calculation + arm detection via armScore
+- `src/utils/morphMapper.ts` — Converts user inputs → morph target influences using ANSUR II + NHANES ML model; `estimatedMeasurements()` returns 12 fields including all ML-predicted measurements
+- `src/utils/heatmapEngine.ts` — Garment coverage detection + fit score calculation + arm detection via armScore + normalYAbs gray zone disambiguation; 9 height regions with per-measurement weighting
+- `src/utils/smoothingEngine.ts` — Laplacian color smoothing for heatmap vertex colors; `buildAdjacency()` + `smoothColors()` with double-buffer strategy
 - `src/utils/fitAdvisor.ts` — Fit advisor panel logic
 - `src/data/ansur2_model.json` — Gradient boosting lookup table (29k subjects, trilinear interpolation)
 - `src/data/bodyProfiles.json` — Body type profiles with measurement offsets and morph response curves
@@ -66,14 +85,17 @@ A web-based 3D body avatar that users can customize with their measurements, the
 - 0.55: belly/waist | 0.58: waist | 0.68: chest | 0.77: shoulders
 - 0.85: neck | 0.90+: head
 
-### Arm Detection (armScore)
+### Arm Detection (armScore + normalYAbs)
 ```
 armScore = normalXAbs + xAbs * 3
-arm vertex if armScore > 1.3
 ```
+- Clear arm: armScore > 1.3 → uncovered below sleeveEnd
+- Gray zone: armScore 1.0–1.3 → use normalYAbs to disambiguate:
+  - normalYAbs > 0.25 → side torso (covered)
+  - normalYAbs ≤ 0.25 → arm (uncovered below sleeveEnd)
+- Clear torso: armScore < 1.0 → always covered
 - Side torso: normalXAbs ~0.4–0.6, xAbs ~0.10–0.15 → score ~0.7–1.1
 - Actual arms: normalXAbs ~0.7–1.0, xAbs ~0.15–0.35 → score ~1.2–2.0
-- Gray zone: score 1.0–1.3 (armpit/flank transition — currently causes side torso gap)
 
 ---
 
@@ -106,11 +128,15 @@ arm vertex if armScore > 1.3
 - Fit style: Compression, Slim, Regular, Relaxed, Oversized
 - Heatmap overlays on skin texture (vertex colors multiplied with texture)
 - Toggle on/off
-- Edge fade at garment boundaries
-- Jeans coverage: full legs, waist to ankles ✅
+- Edge fade at garment boundaries (wider fades for jeans: 0.02)
+- Jeans coverage: full legs, waist to ankles, armScore-gated hand exclusion ✅
 - Oxford shirt: full torso front+back, long sleeves ✅
-- T-shirt: torso + short sleeves via armScore detection ✅ (minor side gap remains)
+- T-shirt: torso + short sleeves via armScore + normalYAbs detection ✅
 - Fit score: -1 (tight/red) → 0 (balanced/green) → +1 (loose/blue)
+- 9 measurement regions with per-measurement weighting (was 5)
+- Direct ML predictions for all measurements (no derived estimates)
+- Laplacian color smoothing (2 passes, weight 0.5) for cleaner gradients
+- Heatmap still has some boundary jaggedness — inherent to vertex-based coloring
 
 ### ✅ 2D Fit Preview (separate page)
 - Located at `/fit2d.html`
@@ -121,16 +147,18 @@ arm vertex if armScore > 1.3
 
 ## Phases
 
-### Phase 1: Heatmap on Body Surface — ~85% done
+### Phase 1: Heatmap on Body Surface — ~95% done
 - ✅ Garment selection, size, fit style
 - ✅ Heatmap colors body where garment covers
 - ✅ Overlays on skin texture, toggle on/off
-- ✅ Jeans work well (slim + straight)
+- ✅ Jeans work well (slim + straight, armScore-gated hand exclusion)
 - ✅ Oxford shirt works well (full torso + long sleeves)
-- ✅ T-shirt sleeve cutoff (armScore-based detection)
-- 🟡 T-shirt side torso gap (minor — gray zone vertices at armpit/flank)
-- ❌ Need more garment types
-- ❌ Need better fit calculation with more measurement points
+- ✅ T-shirt sleeve cutoff (armScore + normalYAbs detection)
+- ✅ Side torso gap fixed (normalYAbs disambiguation in gray zone)
+- ✅ Better fit calculation (9 regions, direct ML predictions, per-measurement weighting)
+- ✅ Laplacian color smoothing (2 passes, boundary-preserving)
+- 🟡 Heatmap boundary jaggedness (inherent to vertex-based coloring — acceptable for Phase 1)
+- ❌ Need more garment types (deferred)
 
 ### Phase 2: Generated Garment Shell from Specs — not started
 - Generate semi-transparent clothing shape from measurements + fit category
@@ -148,7 +176,7 @@ arm vertex if armScore > 1.3
 ## Miscellaneous Fixes & TODO
 
 ### Pending Fixes
-- **T-shirt side torso gap**: Gray zone vertices (armScore 1.0–1.3) at armpit/flank boundary incorrectly excluded by sleeve cutoff. Need to either refine armScore threshold with additional signal, or pre-bake arm vertex groups in Blender as a custom attribute.
+- **Heatmap boundary jaggedness**: Vertex-based coloring creates some blocky edges at garment boundaries. Could be improved with shader-based approach or higher mesh resolution, but acceptable for Phase 1.
 
 ### Pending Features
 - Female model (export from MakeHuman + generate morphs)
@@ -159,7 +187,6 @@ arm vertex if armScore > 1.3
 - Indian population data (deferred)
 - Shopify integration
 - More garment types (polo, hoodie, jacket, shorts, etc.)
-- Better fit calculation with more measurement points per garment
 - Garment construction data for better shapes
 
 ### Morph Target Issues
@@ -227,6 +254,7 @@ git push origin main
 |---|------|------|---------|
 | 001 | Pre-2026-04-12 | `.kiro/SESSION_HANDOFF_001.md` | Initial project setup, architecture, 3D avatar, ML model, heatmap Phase 1 |
 | 002 | 2026-04-12 | `.kiro/SESSION_HANDOFF_002.md` | T-shirt sleeve cutoff fix (vertex normals + armScore approach) |
+| 003 | 2026-04-12 | `.kiro/SESSION_HANDOFF_003.md` | Phase 1 refinements: better fit calc, side torso gap fix, color smoothing, jeans boundary fix |
 
 ---
 
@@ -256,3 +284,12 @@ git push origin main
 - Minor side torso gap remains (gray zone vertices at armpit/flank — deferred)
 - Cleaned up all debug logging
 - Created PROJECT_MASTER.md and session handoff system
+
+### Session 003 — 2026-04-12
+- Closed out T-shirt sleeve cutoff verification tasks
+- Better fit calculation: expanded estimatedMeasurements() to 12 fields, 9 height regions (was 5), per-measurement weighting, direct ML predictions in bodyMap, expanded size charts and ease targets
+- Side torso gap fix: added normalYAbs as secondary signal for gray zone disambiguation (normalYAbs > 0.25 = side torso, ≤ 0.25 = arm)
+- Heatmap color smoothing: new smoothingEngine.ts with Laplacian smoothing (buildAdjacency + smoothColors), 2 passes, weight 0.5, boundary-preserving
+- Jeans boundary fix: armScore-gated hand exclusion, side edge fade, wider waistband/ankle fades
+- Set up Vitest + fast-check test infrastructure, wrote 5 property-based tests
+- Phase 1 now ~95% complete — heatmap still has some boundary jaggedness but acceptable

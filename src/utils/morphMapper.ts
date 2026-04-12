@@ -140,10 +140,25 @@ export function inputsToMorphs(u: UserInputs): Record<string, number> {
   };
 }
 
+export interface EstimatedMeasurements {
+  bustCm: number;
+  waistCm: number;
+  hipCm: number;
+  highHipCm: number;
+  inseamCm: number;
+  shoulderCm: number;
+  neckCm: number;
+  bicepCm: number;
+  thighCm: number;
+  calfCm: number;
+  wristCm: number;
+  bmi: number;
+}
+
 /**
  * Returns estimated measurements using the gradient boosting lookup table.
  */
-export function estimatedMeasurements(u: UserInputs) {
+export function estimatedMeasurements(u: UserInputs): EstimatedMeasurements {
   const g = u.gender;
   const bmi = u.weightKg / Math.max(0.01, (u.heightCm / 100) ** 2);
 
@@ -156,6 +171,12 @@ export function estimatedMeasurements(u: UserInputs) {
     hipCm: Math.round(hip),
     highHipCm: Math.round(u.highHipCm ?? (waist * 0.4 + hip * 0.6)),
     inseamCm: Math.round(u.inseamCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'inseamCm')),
+    shoulderCm: Math.round(lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'shoulderCm')),
+    neckCm: Math.round(lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'neckCm')),
+    bicepCm: Math.round(lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'bicepCm')),
+    thighCm: Math.round(lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'thighCm')),
+    calfCm: Math.round(lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'calfCm')),
+    wristCm: Math.round(lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'wristCm')),
     bmi: Math.round(bmi * 10) / 10,
   };
 }

@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { useBodyStore } from '../stores/bodyStore';
 import { inputsToMorphs, estimatedMeasurements } from '../utils/morphMapper';
 import { computeHeatmap, fitScoreToColor } from '../utils/heatmapEngine';
+import { buildAdjacency, smoothColors, type AdjacencyMap } from '../utils/smoothingEngine';
 
 const damp = (cur: number, tgt: number, spd: number, dt: number) =>
   cur + (tgt - cur) * (1 - Math.exp(-spd * dt));
@@ -34,6 +35,7 @@ export function BodyModel() {
   const skinMaterialRef = useRef<THREE.Material | null>(null);
   const heatmapMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
   const bodyHeightRange = useRef<{ min: number; max: number }>({ min: 0, max: 1.73 });
+  const adjacencyRef = useRef<AdjacencyMap | null>(null);
 
   const clonedScene = useMemo(() => scene.clone(true), [scene]);
 
@@ -155,6 +157,7 @@ export function BodyModel() {
     const hRange = hMax - hMin;
 
     const colors = new Float32Array(count * 3);
+    const coverageMask: boolean[] = new Array(count);
 
     for (let i = 0; i < count; i++) {
       const y = pos.getY(i);
@@ -163,8 +166,9 @@ export function BodyModel() {
       const normalizedH = hRange > 0 ? (y - hMin) / hRange : 0.5;
       const distFromCenter = Math.sqrt(x * x + z * z);
       const normalXAbs = nor ? Math.abs(nor.getX(i)) : 0;
+      const normalYAbs = nor ? Math.abs(nor.getY(i)) : 0;
 
-      const { covered, fitScore, edgeFade } = heatmap.getVertexFit(normalizedH, Math.abs(x), z, distFromCenter, normalXAbs);
+      const { covered, fitScore, edgeFade } = heatmap.getVertexFit(normalizedH, Math.abs(x), z, distFromCenter, normalXAbs, normalYAbs);
 
       if (covered && edgeFade > 0.01) {
         const [r, g, b] = fitScoreToColor(fitScore);
@@ -172,14 +176,29 @@ export function BodyModel() {
         colors[i * 3] = r * edgeFade + 1.0 * (1 - edgeFade);
         colors[i * 3 + 1] = g * edgeFade + 1.0 * (1 - edgeFade);
         colors[i * 3 + 2] = b * edgeFade + 1.0 * (1 - edgeFade);
+        coverageMask[i] = true;
       } else {
         colors[i * 3] = 1;
         colors[i * 3 + 1] = 1;
         colors[i * 3 + 2] = 1;
+        coverageMask[i] = false;
       }
     }
 
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    // Build adjacency map on first render, cache in ref
+    if (geometry.index && !adjacencyRef.current) {
+      adjacencyRef.current = buildAdjacency(
+        geometry.index.array as Uint16Array | Uint32Array,
+        count,
+      );
+    }
+
+    // Apply smoothing if adjacency is available
+    const smoothedColors = adjacencyRef.current
+      ? smoothColors(colors, coverageMask, adjacencyRef.current, { iterations: 2, weight: 0.5 })
+      : colors;
+
+    geometry.setAttribute('color', new THREE.BufferAttribute(smoothedColors, 3));
 
     // Use skin material with vertex colors multiplied on top
     const skinMat = skinMaterialRef.current as THREE.MeshPhysicalMaterial;
