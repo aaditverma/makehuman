@@ -173,6 +173,40 @@ armScore = normalXAbs + xAbs * 3
 
 ---
 
+## External Tools & Integrations to Evaluate
+
+### Body Model — SHAPY / SMPL / Meshcapade
+- **SHAPY** (https://github.com/muelea/shapy) — open source (CVPR 2022), takes measurements + semantic attributes → regresses SMPL body shape parameters. Python-based, would run server-side. Free for research.
+- **Meshcapade API** (https://meshcapade.com) — commercial REST API built on SMPL. Creates avatars from measurements or photos. Free tier for non-commercial, €1,500+/year for micro companies.
+- **SMPL mesh** has standardized topology (~6,890 vertices) — consistent vertex indices across all body shapes, which makes garment fitting much easier than our current MakeHuman morph approach.
+- **Consideration for Phase 2**: SMPL's standardized topology would let us define garment patterns relative to known vertex indices. Could replace MakeHuman + morph targets entirely, or run alongside as an alternative body engine.
+- **Trade-off**: Current MakeHuman system works well and runs fully client-side. SMPL would add server dependency or require bundling the model (~50MB+). Meshcapade API adds external dependency + cost.
+
+### Clothing Visualization — Photoroom
+- **Photoroom Virtual Model API** (https://docs.photoroom.com/image-editing-api-plus-plan/virtual-model) — takes flat-lay clothing photos → generates photoshoot-quality images on AI models. 2D image generation, not 3D.
+- **Not useful for Phase 2** (garment shell mesh is 3D).
+- **Useful for Phase 3**: Could generate product images for Shopify listings from flat-lay photos. Good for marketing/product photography automation.
+
+### Virtual Try-On — Fitroom
+- **Fitroom API** (https://developer.fitroom.app/) — image-based virtual try-on. Upload person photo + clothing photo → composite image. 2D, not 3D.
+- **Not useful for Phase 2** (again, 2D not 3D).
+- **Useful for Phase 3**: "See it on yourself" feature — customer uploads selfie, sees clothing on their body. Complements our 3D fit visualization with a 2D photo-realistic view.
+
+### Decision Matrix
+
+| Tool | Phase 2 (Garment Shell) | Phase 3 (Real Garments) | Cost | Integration Effort |
+|------|------------------------|------------------------|------|-------------------|
+| SHAPY/SMPL | High — standardized body mesh for garment fitting | High — better body accuracy | Free (open source) | High — Python server, model bundling |
+| Meshcapade API | High — same benefit, easier integration | High | €1,500+/year | Medium — REST API calls |
+| Photoroom | None | Medium — product image generation | Paid API | Low — REST API |
+| Fitroom | None | High — 2D try-on from selfie | Paid API | Low — REST API |
+
+### Open Questions
+- Do we want to keep MakeHuman + morph targets (fully client-side) or migrate to SMPL (server dependency)?
+- Can we run SMPL inference in the browser via ONNX/TensorFlow.js to stay client-side?
+- For Phase 2 garment shell: generate from parametric patterns (our own) or use an existing garment simulation library?
+- Photoroom/Fitroom integration timing — Phase 3 or later?
+
 ## Miscellaneous Fixes & TODO
 
 ### Pending Fixes
