@@ -149,6 +149,7 @@ export function BodyModel() {
 
     const geometry = mesh.geometry;
     const pos = geometry.attributes.position;
+    const nor = geometry.attributes.normal;
     const count = pos.count;
     const { min: hMin, max: hMax } = bodyHeightRange.current;
     const hRange = hMax - hMin;
@@ -161,8 +162,9 @@ export function BodyModel() {
       const z = pos.getZ(i);
       const normalizedH = hRange > 0 ? (y - hMin) / hRange : 0.5;
       const distFromCenter = Math.sqrt(x * x + z * z);
+      const normalXAbs = nor ? Math.abs(nor.getX(i)) : 0;
 
-      const { covered, fitScore, edgeFade } = heatmap.getVertexFit(normalizedH, Math.abs(x), z, distFromCenter);
+      const { covered, fitScore, edgeFade } = heatmap.getVertexFit(normalizedH, Math.abs(x), z, distFromCenter, normalXAbs);
 
       if (covered && edgeFade > 0.01) {
         const [r, g, b] = fitScoreToColor(fitScore);

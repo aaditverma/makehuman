@@ -99,7 +99,7 @@ const heightToMeasurement: Array<{ hCenter: number; hWidth: number; measurement:
 ];
 
 export interface HeatmapResult {
-  getVertexFit(normalizedHeight: number, xAbs: number, yPos: number, distFromCenter: number): { covered: boolean; fitScore: number; edgeFade: number };
+  getVertexFit(normalizedHeight: number, xAbs: number, yPos: number, distFromCenter: number, normalXAbs?: number): { covered: boolean; fitScore: number; edgeFade: number };
 }
 
 /**
@@ -162,7 +162,7 @@ export function computeHeatmap(
   const isTop = garment.type === 'top';
 
   return {
-    getVertexFit(h: number, xAbs: number, yPos: number, distFromCenter: number) {
+    getVertexFit(h: number, xAbs: number, yPos: number, distFromCenter: number, normalXAbs: number = 0) {
       // --- Garment shape coverage ---
       if (isTop) {
         // Coverage: between hem and top
@@ -182,6 +182,19 @@ export function computeHeatmap(
 
         // Hands: exclude hand vertices
         if (distFromCenter > 0.22 && h < 0.52) return { covered: false, fitScore: 0, edgeFade: 0 };
+
+        // Sleeve cutoff: arm vertices below sleeveEnd are uncovered
+        // Three-signal arm detection to avoid catching side torso:
+        // armScore combines normal direction + X position
+        // Side torso: normalXAbs ~0.4-0.6, xAbs ~0.10-0.15 → score ~0.7-1.1
+        // Actual arms: normalXAbs ~0.7-1.0, xAbs ~0.15-0.35 → score ~1.2-2.0
+        const sleeveEnd = garment.sleeveEnd;
+        if (sleeveEnd != null && h < sleeveEnd) {
+          const armScore = normalXAbs + xAbs * 3;
+          if (armScore > 1.3) {
+            return { covered: false, fitScore: 0, edgeFade: 0 };
+          }
+        }
       } else {
         // Jeans / pants shape:
         // Above waist: not covered
@@ -214,9 +227,10 @@ export function computeHeatmap(
         // Fade near neckline
         const neckDist = (0.82 - h) / 0.015;
         if (neckDist < 1 && h > 0.75) edgeFade = Math.min(edgeFade, Math.max(0, neckDist));
-        // Fade near sleeve end
+        // Fade near sleeve end — ONLY for arm vertices
         const sleeveEnd = garment.sleeveEnd ?? 0.62;
-        if (distFromCenter > 0.12) {
+        const armScore = normalXAbs + xAbs * 3;
+        if (armScore > 1.3) {
           const sleeveDist = (h - sleeveEnd) / 0.015;
           if (sleeveDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, sleeveDist));
         }

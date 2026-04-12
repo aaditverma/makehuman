@@ -1,0 +1,258 @@
+# Body Editor / Clothing Fit Platform — Project Master
+
+> This is the single source of truth for the project. Read this file at the start of every new session.
+
+## The Product
+A web-based 3D body avatar that users can customize with their measurements, then visualize how clothing fits on their body using heatmaps. Designed to be embedded into shopping websites (Shopify) to reduce returns by showing fit before purchase.
+
+**GitHub:** https://github.com/aaditverma/makehuman
+**Stack:** React + Three.js + Vite + TypeScript + Tailwind CSS
+**Dev server:** `npm run dev`
+
+---
+
+## Architecture
+
+### 3D Avatar System
+- **Model:** MakeHuman male export (FBX) → Blender script generates morph targets → GLB
+- **Source FBX:** `public/models/male-base.fbx` (MakeHuman, default male, standing02 pose, default skeleton, with skin texture)
+- **Generated GLB:** `public/models/human-male.glb` (214k vertices, 2 subdivision levels, 25 morph targets + skin texture)
+- **Blender script:** `scripts/generate-morphs.py` — imports FBX, fixes orientation (-90° X rotation), subdivides, generates morph targets with Laplacian smoothing, exports GLB
+- **Blender path:** `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`
+
+### Key Files
+- `src/components/BodyModel.tsx` — Three.js mesh, morph target animation, heatmap vertex coloring, reads vertex normals for arm detection
+- `src/components/UI/ControlPanel.tsx` — All UI controls (body inputs, garment selection, heatmap toggle, direct morph sliders)
+- `src/components/Scene.tsx` — Three.js canvas, lighting, grid
+- `src/components/Controls.tsx` — OrbitControls camera
+- `src/components/Lighting.tsx` — Studio lighting setup
+- `src/stores/bodyStore.ts` — Zustand store (user inputs, morph overrides, heatmap state)
+- `src/utils/morphMapper.ts` — Converts user inputs → morph target influences using ANSUR II + NHANES ML model
+- `src/utils/heatmapEngine.ts` — Garment coverage detection + fit score calculation + arm detection via armScore
+- `src/utils/fitAdvisor.ts` — Fit advisor panel logic
+- `src/data/ansur2_model.json` — Gradient boosting lookup table (29k subjects, trilinear interpolation)
+- `src/data/bodyProfiles.json` — Body type profiles with measurement offsets and morph response curves
+
+### ML Model
+- Trained on ANSUR II (6,068 military) + NHANES 2011-2018 (22,468 general population) + bdims (507)
+- Gradient boosting regression (n=300, depth=5)
+- Predicts: chest, waist, hip, shoulder, neck, bicep, thigh, calf, wrist, inseam from height/weight/age/gender
+- Exported as lookup table with trilinear interpolation (no Python needed at runtime)
+- Training script: `scripts/train-body-model.py`
+
+### Morph Targets (25 total)
+**Body shape:** Heavier, Thinner, Muscular, Taller, Shorter
+**Regional:** WiderShoulders, WiderHips, BiggerChest, BiggerStomach, LongerLegs, LongerArms, ThickerNeck, ThickerUpperArms, ThickerThighs, ThickerCalves, LongerTorso, WiderBack, DeeperChest, NarrowerWaist
+**Fat deposits:** BellyPouch, LoveHandles, BackFat, UpperArmSag, DoubleChin, InnerThighFat
+
+---
+
+## Coordinate System (CRITICAL)
+
+- In the GLB: **Z negative = front (belly)**, **Z positive = back**
+- In Blender morph script, after -90° X rotation: **FORWARD (Y axis) positive = BACK**
+- All morph functions check `co[FORWARD] < 0` for front-facing vertices
+- Heatmap engine receives `z` as `yPos` parameter — `yPos < 0` = front, `yPos > 0` = back
+- Arms: high `xAbs` (far from center on X), high `normalXAbs` (outward-facing normals)
+- Torso: low `xAbs`, low `normalXAbs` (front/back facing normals along Z)
+
+### Vertex Ranges (base pose)
+- X: -0.319 to 0.351 (width 0.670)
+- Y: -0.001 to 1.729 (height 1.730)
+- Z: -0.165 to 0.144 (depth 0.309)
+
+### Body Height Landmarks (normalized 0–1)
+- 0.04: ankles | 0.18: calves | 0.36: thighs | 0.44: crotch/hip
+- 0.55: belly/waist | 0.58: waist | 0.68: chest | 0.77: shoulders
+- 0.85: neck | 0.90+: head
+
+### Arm Detection (armScore)
+```
+armScore = normalXAbs + xAbs * 3
+arm vertex if armScore > 1.3
+```
+- Side torso: normalXAbs ~0.4–0.6, xAbs ~0.10–0.15 → score ~0.7–1.1
+- Actual arms: normalXAbs ~0.7–1.0, xAbs ~0.15–0.35 → score ~1.2–2.0
+- Gray zone: score 1.0–1.3 (armpit/flank transition — currently causes side torso gap)
+
+---
+
+## What's Done
+
+### ✅ 3D Avatar
+- MakeHuman male model with skin texture (young_lightskinned_male_diffuse.png)
+- 214k vertices (2x subdivision), smooth shading
+- 25 morph targets with 6-pass Laplacian smoothing
+- Smooth animated transitions between morph states
+- Height scaling (Y axis) with width compensation for shorter people
+- Skin material: MeshPhysicalMaterial with texture, sheen
+
+### ✅ User Input System
+- Height (cm), Weight (kg), Age, Gender (male only currently)
+- Body type presets: Slim, Average, Athletic, Curvy, Heavy
+- Custom measurements: Bust, Waist, Hip, High Hip, Inseam (with cm/in toggle per field)
+- Direct morph slider testing mode (manual override)
+- Estimated measurements display panel
+
+### ✅ ML-Driven Body Prediction
+- ANSUR II + NHANES gradient boosting model
+- Lookup table with trilinear interpolation
+- Z-score based morph mapping against population statistics
+- Body type modifiers from bodyProfiles.json
+
+### ✅ Heatmap System
+- Garment selection: T-Shirt, Oxford Shirt, Slim Jeans, Straight Jeans
+- Size selection per garment (XS–XXL for tops, 28–38 for jeans)
+- Fit style: Compression, Slim, Regular, Relaxed, Oversized
+- Heatmap overlays on skin texture (vertex colors multiplied with texture)
+- Toggle on/off
+- Edge fade at garment boundaries
+- Jeans coverage: full legs, waist to ankles ✅
+- Oxford shirt: full torso front+back, long sleeves ✅
+- T-shirt: torso + short sleeves via armScore detection ✅ (minor side gap remains)
+- Fit score: -1 (tight/red) → 0 (balanced/green) → +1 (loose/blue)
+
+### ✅ 2D Fit Preview (separate page)
+- Located at `/fit2d.html`
+- SVG body silhouette with heatmap regions
+- Separate from the 3D system
+
+---
+
+## Phases
+
+### Phase 1: Heatmap on Body Surface — ~85% done
+- ✅ Garment selection, size, fit style
+- ✅ Heatmap colors body where garment covers
+- ✅ Overlays on skin texture, toggle on/off
+- ✅ Jeans work well (slim + straight)
+- ✅ Oxford shirt works well (full torso + long sleeves)
+- ✅ T-shirt sleeve cutoff (armScore-based detection)
+- 🟡 T-shirt side torso gap (minor — gray zone vertices at armpit/flank)
+- ❌ Need more garment types
+- ❌ Need better fit calculation with more measurement points
+
+### Phase 2: Generated Garment Shell from Specs — not started
+- Generate semi-transparent clothing shape from measurements + fit category
+- Garment sits on body as separate mesh
+- Heatmap colors the garment shell
+- Any brand can plug in their size chart
+
+### Phase 3: Real Garment Mapping — not started
+- Map actual brand garments onto body
+- Shopify integration
+- 3D clothing meshes or AI-generated overlay
+
+---
+
+## Miscellaneous Fixes & TODO
+
+### Pending Fixes
+- **T-shirt side torso gap**: Gray zone vertices (armScore 1.0–1.3) at armpit/flank boundary incorrectly excluded by sleeve cutoff. Need to either refine armScore threshold with additional signal, or pre-bake arm vertex groups in Blender as a custom attribute.
+
+### Pending Features
+- Female model (export from MakeHuman + generate morphs)
+- SHAPY/SMPL integration for research-grade accuracy
+- Age-based body composition changes
+- More NHANES cycles for training data
+- Skin texture quality improvements
+- Indian population data (deferred)
+- Shopify integration
+- More garment types (polo, hoodie, jacket, shorts, etc.)
+- Better fit calculation with more measurement points per garment
+- Garment construction data for better shapes
+
+### Morph Target Issues
+- Some morphs have cross-region bleed at boundaries
+- Weight slider caps out at extreme weights (morph displacement limit)
+
+---
+
+## Key Commands
+
+### Regenerating the model
+```bash
+& "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --python scripts/generate-morphs.py -- male
+```
+
+### Retraining the ML model
+```bash
+python scripts/train-body-model.py
+```
+
+### Git LFS
+Set up for *.glb, *.fbx, *.png files. The GLB is ~56MB.
+
+---
+
+## Git Workflow
+
+**Remote:** `origin` → https://github.com/aaditverma/makehuman
+
+### End-of-Session Commit & Push
+```bash
+git add -A
+git commit -m "Session XXX: <brief summary>"
+git push origin main
+```
+
+### Pull at Start of Session
+```bash
+git pull origin main
+```
+
+### Branch Workflow (for larger features)
+```bash
+git checkout -b feature/<feature-name>
+# ... work ...
+git add -A
+git commit -m "feat: <description>"
+git push origin feature/<feature-name>
+# merge via PR or:
+git checkout main
+git merge feature/<feature-name>
+git push origin main
+```
+
+### LFS Notes
+- Large files (*.glb, *.fbx, *.png) are tracked by Git LFS
+- After cloning: `git lfs pull` to download large files
+- The GLB model is ~56MB
+
+---
+
+## Session Handoff Index
+
+| # | Date | File | Summary |
+|---|------|------|---------|
+| 001 | Pre-2026-04-12 | `.kiro/SESSION_HANDOFF_001.md` | Initial project setup, architecture, 3D avatar, ML model, heatmap Phase 1 |
+| 002 | 2026-04-12 | `.kiro/SESSION_HANDOFF_002.md` | T-shirt sleeve cutoff fix (vertex normals + armScore approach) |
+
+---
+
+## Session Timeline
+
+### Session 001 — Pre-2026-04-12
+- Set up full project from scratch
+- MakeHuman male model → Blender morph pipeline → GLB export
+- Built React + Three.js viewer with morph target animation
+- Trained ML model on ANSUR II + NHANES data (29k subjects)
+- Implemented morphMapper with z-score based morph mapping
+- Built heatmap engine with garment coverage, fit scoring, edge fades
+- Oxford shirt and jeans heatmaps working correctly
+- T-shirt sleeve cutoff broken — removed cutoff, tee renders as full-sleeve
+- Built 2D fit preview (separate SVG page)
+- Fixed forward direction bug (Z negative = front)
+
+### Session 002 — 2026-04-12
+- Diagnosed T-shirt sleeve cutoff bug — found TWO root causes:
+  1. No arm detection in coverage check (`sleeveEnd` unused)
+  2. Edge fade applied sleeve fade to ALL side/back vertices (the real killer)
+- Added `normalXAbs` parameter to `getVertexFit()` for vertex normal data
+- BodyModel.tsx now reads `geometry.attributes.normal` and passes to heatmap engine
+- Implemented `armScore = normalXAbs + xAbs * 3` for arm vs torso classification
+- Fixed both coverage check and edge fade to use armScore gating
+- T-shirt now renders with short sleeves, back fully covered
+- Minor side torso gap remains (gray zone vertices at armpit/flank — deferred)
+- Cleaned up all debug logging
+- Created PROJECT_MASTER.md and session handoff system
