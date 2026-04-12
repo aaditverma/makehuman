@@ -23,26 +23,11 @@ interface GarmentSizeChart {
 
 const garments: Record<string, GarmentSizeChart> = {
   tee: {
-    label: 'Round Neck Tee',
+    label: 'T-Shirt',
     type: 'top',
     neckline: 'round',
-    sleeveEnd: 0.62,  // short sleeves end mid-upper-arm
-    coverage: { hMin: 0.54, hMax: 0.78 },
-    sizes: {
-      'XS': { chest: 90, waist: 86, shoulder: 42 },
-      'S':  { chest: 96, waist: 92, shoulder: 44 },
-      'M':  { chest: 102, waist: 98, shoulder: 46 },
-      'L':  { chest: 108, waist: 104, shoulder: 48 },
-      'XL': { chest: 116, waist: 112, shoulder: 50 },
-      'XXL':{ chest: 124, waist: 120, shoulder: 52 },
-    },
-  },
-  'vneck-tee': {
-    label: 'V-Neck Tee',
-    type: 'top',
-    neckline: 'vneck',
-    sleeveEnd: 0.62,
-    coverage: { hMin: 0.54, hMax: 0.78 },
+    sleeveEnd: 0.60,
+    coverage: { hMin: 0.44, hMax: 0.82 },
     sizes: {
       'XS': { chest: 90, waist: 86, shoulder: 42 },
       'S':  { chest: 96, waist: 92, shoulder: 44 },
@@ -57,7 +42,7 @@ const garments: Record<string, GarmentSizeChart> = {
     type: 'top',
     neckline: 'collar',
     sleeveEnd: 0.48,  // long sleeves to wrist
-    coverage: { hMin: 0.50, hMax: 0.80 },
+    coverage: { hMin: 0.44, hMax: 0.82 },
     sizes: {
       'XS': { chest: 94, waist: 88, shoulder: 43 },
       'S':  { chest: 100, waist: 94, shoulder: 45 },
@@ -180,31 +165,23 @@ export function computeHeatmap(
     getVertexFit(h: number, xAbs: number, yPos: number, distFromCenter: number) {
       // --- Garment shape coverage ---
       if (isTop) {
-        // Head: never covered
-        if (h > 0.83) return { covered: false, fitScore: 0, edgeFade: 0 };
-        // Below hem
+        // Coverage: between hem and top
         if (h < hMin) return { covered: false, fitScore: 0, edgeFade: 0 };
+        if (h > 0.83) return { covered: false, fitScore: 0, edgeFade: 0 };
 
-        // Neckline cutout
+        // Neckline cutout — small area at top center
         const neckline = garment.neckline ?? 'round';
         if (neckline === 'round') {
           if (h > 0.78 && distFromCenter < 0.06) return { covered: false, fitScore: 0, edgeFade: 0 };
         } else if (neckline === 'vneck') {
           if (h > 0.78 && distFromCenter < 0.06) return { covered: false, fitScore: 0, edgeFade: 0 };
-          // V extends down on front only
           if (h > 0.73 && h < 0.80 && distFromCenter < 0.04 && yPos > 0) return { covered: false, fitScore: 0, edgeFade: 0 };
         } else {
           if (h > 0.80 && distFromCenter < 0.05) return { covered: false, fitScore: 0, edgeFade: 0 };
         }
 
-        // Sleeve logic: only for arm vertices (far from torso center)
-        const sleeveEnd = garment.sleeveEnd ?? 0.62;
-        const isFarFromTorso = distFromCenter > 0.16;
-        if (isFarFromTorso) {
-          // This is an arm/hand vertex
-          if (h < sleeveEnd) return { covered: false, fitScore: 0, edgeFade: 0 };  // below sleeve end
-          if (h < 0.50) return { covered: false, fitScore: 0, edgeFade: 0 };  // hands always uncovered
-        }
+        // Hands: exclude hand vertices
+        if (distFromCenter > 0.22 && h < 0.52) return { covered: false, fitScore: 0, edgeFade: 0 };
       } else {
         // Jeans / pants shape:
         // Above waist: not covered
@@ -231,23 +208,24 @@ export function computeHeatmap(
       let edgeFade = 1.0;
       if (isTop) {
         // Fade near hem
-        const hemDist = (h - hMin) / 0.03;
+        const effectiveHMin = hMin;
+        const hemDist = (h - effectiveHMin) / 0.015;
         if (hemDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, hemDist));
         // Fade near neckline
-        const neckDist = (0.82 - h) / 0.03;
+        const neckDist = (0.82 - h) / 0.015;
         if (neckDist < 1 && h > 0.75) edgeFade = Math.min(edgeFade, Math.max(0, neckDist));
         // Fade near sleeve end
         const sleeveEnd = garment.sleeveEnd ?? 0.62;
         if (distFromCenter > 0.12) {
-          const sleeveDist = (h - sleeveEnd) / 0.03;
+          const sleeveDist = (h - sleeveEnd) / 0.015;
           if (sleeveDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, sleeveDist));
         }
       } else {
         // Fade near waistband
-        const waistDist = (hMax - h) / 0.03;
+        const waistDist = (hMax - h) / 0.015;
         if (waistDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, waistDist));
         // Fade near ankles
-        const ankleDist = (h - 0.04) / 0.03;
+        const ankleDist = (h - 0.04) / 0.015;
         if (ankleDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, ankleDist));
       }
 

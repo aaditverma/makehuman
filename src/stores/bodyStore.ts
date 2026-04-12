@@ -31,7 +31,7 @@ export const defaultInputs: UserInputs = {
 };
 
 export type FitPreference = 'compression' | 'slim' | 'regular' | 'relaxed' | 'oversized';
-export type GarmentType = 'tee' | 'vneck-tee' | 'oxford' | 'slim-jeans' | 'straight-jeans' | 'none';
+export type GarmentType = 'tee' | 'oxford' | 'slim-jeans' | 'straight-jeans' | 'none';
 
 interface BodyStore {
   inputs: UserInputs;

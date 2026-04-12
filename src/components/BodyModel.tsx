@@ -84,11 +84,19 @@ export function BodyModel() {
       const geo = (foundMesh as THREE.Mesh).geometry as THREE.BufferGeometry;
       const pos = geo.attributes.position;
       let minY = Infinity, maxY = -Infinity;
+      let minX = Infinity, maxX = -Infinity;
+      let minZ = Infinity, maxZ = -Infinity;
       for (let i = 0; i < pos.count; i++) {
-        const y = pos.getY(i);
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
       }
+      console.log('[BodyModel] Vertex ranges:', {
+        x: `${minX.toFixed(3)} to ${maxX.toFixed(3)} (${(maxX-minX).toFixed(3)})`,
+        y: `${minY.toFixed(3)} to ${maxY.toFixed(3)} (${(maxY-minY).toFixed(3)})`,
+        z: `${minZ.toFixed(3)} to ${maxZ.toFixed(3)} (${(maxZ-minZ).toFixed(3)})`,
+      });
       bodyHeightRange.current = { min: minY, max: maxY };
     }
 
@@ -163,7 +171,6 @@ export function BodyModel() {
         colors[i * 3 + 1] = g * edgeFade + 1.0 * (1 - edgeFade);
         colors[i * 3 + 2] = b * edgeFade + 1.0 * (1 - edgeFade);
       } else {
-        // Uncovered areas: white (neutral multiply)
         colors[i * 3] = 1;
         colors[i * 3 + 1] = 1;
         colors[i * 3 + 2] = 1;
