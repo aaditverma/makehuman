@@ -4,6 +4,7 @@ import { Grid, Environment } from '@react-three/drei';
 import { Lighting } from './Lighting';
 import { Controls } from './Controls';
 import { BodyModel } from './BodyModel';
+import { GarmentShell } from './GarmentShell';
 
 function LoadingFallback() {
   return (
@@ -38,6 +39,7 @@ export function Scene() {
       {/* Body model with loading fallback */}
       <Suspense fallback={<LoadingFallback />}>
         <BodyModel />
+        <GarmentShell />
       </Suspense>
 
       {/* Ground grid for reference */}

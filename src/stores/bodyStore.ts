@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { BrandSizeChart } from '../utils/sizeChartEngine';
 
 export type Gender = 'male' | 'female';
 export type BodyType = 'slim' | 'average' | 'athletic' | 'curvy' | 'heavy';
@@ -37,17 +38,23 @@ interface BodyStore {
   inputs: UserInputs;
   morphOverrides: Record<string, number> | null;
   heatmapEnabled: boolean;
+  garmentShellEnabled: boolean;
   garmentType: GarmentType;
   garmentSize: string;
   fitPreference: FitPreference;
+  brandSizeChart: BrandSizeChart | null;
+  currentMorphInfluences: Record<string, number>;
   setInput: <K extends keyof UserInputs>(key: K, value: UserInputs[K]) => void;
   setInputs: (partial: Partial<UserInputs>) => void;
   setMorphOverride: (name: string, value: number) => void;
   clearMorphOverrides: () => void;
   setHeatmapEnabled: (v: boolean) => void;
+  setGarmentShellEnabled: (v: boolean) => void;
   setGarmentType: (v: GarmentType) => void;
   setGarmentSize: (v: string) => void;
   setFitPreference: (v: FitPreference) => void;
+  setBrandSizeChart: (chart: BrandSizeChart | null) => void;
+  setCurrentMorphInfluences: (influences: Record<string, number>) => void;
   reset: () => void;
 }
 
@@ -55,9 +62,12 @@ export const useBodyStore = create<BodyStore>((set) => ({
   inputs: { ...defaultInputs },
   morphOverrides: null,
   heatmapEnabled: false,
+  garmentShellEnabled: false,
   garmentType: 'tee',
   garmentSize: 'M',
   fitPreference: 'regular',
+  brandSizeChart: null,
+  currentMorphInfluences: {},
 
   setInput: (key, value) =>
     set((s) => ({ inputs: { ...s.inputs, [key]: value } })),
@@ -72,9 +82,12 @@ export const useBodyStore = create<BodyStore>((set) => ({
 
   clearMorphOverrides: () => set({ morphOverrides: null }),
   setHeatmapEnabled: (v) => set({ heatmapEnabled: v }),
+  setGarmentShellEnabled: (v) => set({ garmentShellEnabled: v }),
   setGarmentType: (v) => set({ garmentType: v }),
   setGarmentSize: (v) => set({ garmentSize: v }),
   setFitPreference: (v) => set({ fitPreference: v }),
+  setBrandSizeChart: (chart) => set({ brandSizeChart: chart }),
+  setCurrentMorphInfluences: (influences) => set({ currentMorphInfluences: influences }),
 
-  reset: () => set({ inputs: { ...defaultInputs }, morphOverrides: null, heatmapEnabled: false }),
+  reset: () => set({ inputs: { ...defaultInputs }, morphOverrides: null, heatmapEnabled: false, brandSizeChart: null, currentMorphInfluences: {} }),
 }));

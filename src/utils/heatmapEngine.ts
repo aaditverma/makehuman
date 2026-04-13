@@ -128,13 +128,14 @@ export function computeHeatmap(
   size: string,
   fitPref: FitPreference,
   bodyMeasurements: BodyMeasurementsInput,
+  sizeChartOverride?: Record<string, number> | null,
 ): HeatmapResult | null {
   if (garmentType === 'none') return null;
 
   const garment = garments[garmentType];
   if (!garment) return null;
 
-  const sizeData = garment.sizes[size];
+  const sizeData = sizeChartOverride ?? garment.sizes[size];
   if (!sizeData) return null;
 
   // Map body measurements to garment measurement names

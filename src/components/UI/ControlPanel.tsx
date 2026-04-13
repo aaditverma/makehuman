@@ -14,6 +14,7 @@ const bodyTypes: { value: BodyType; label: string }[] = [
 export function ControlPanel() {
   const { inputs, setInput, reset } = useBodyStore();
   const { heatmapEnabled, setHeatmapEnabled, garmentType, setGarmentType, garmentSize, setGarmentSize, fitPreference, setFitPreference } = useBodyStore();
+  const { garmentShellEnabled, setGarmentShellEnabled } = useBodyStore();
   const estimated = useMemo(() => estimatedMeasurements(inputs), [inputs]);
   const garmentOptions = useMemo(() => getGarmentOptions(), []);
 
@@ -98,6 +99,28 @@ export function ControlPanel() {
               <span className="px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-200">Loose</span>
             </div>
           </div>
+        )}
+      </div>
+
+      {/* Garment Shell Controls */}
+      <div className="p-4 border-b border-gray-700 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-gray-300">Garment Shell</h2>
+          <button
+            onClick={() => setGarmentShellEnabled(!garmentShellEnabled)}
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+              garmentShellEnabled
+                ? 'bg-purple-600 text-white'
+                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+            }`}
+          >
+            {garmentShellEnabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+        {garmentShellEnabled && (
+          <p className="text-[10px] text-gray-500">
+            Shows 3D garment mesh on body (only tee M available currently)
+          </p>
         )}
       </div>
 

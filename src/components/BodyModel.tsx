@@ -137,11 +137,13 @@ export function BodyModel() {
     const mesh = meshRef.current;
     if (!mesh) return;
 
-    if (!heatmapEnabled || garmentType === 'none') {
+    // No heatmap: show skin
+    if (!heatmapEnabled) {
       if (skinMaterialRef.current) mesh.material = skinMaterialRef.current;
       return;
     }
 
+    // Always render heatmap on body (garment shell heatmap is additive, not a replacement)
     const measurements = estimatedMeasurements(inputs);
     const heatmap = computeHeatmap(garmentType, garmentSize, fitPreference, measurements);
     if (!heatmap) {
@@ -226,6 +228,13 @@ export function BodyModel() {
       currentInfluences.current[i] = next;
       mesh.morphTargetInfluences[i] = Math.min(next, 1.0);
     }
+
+    // Expose current morph influences to store for GarmentShell sync
+    const influences: Record<string, number> = {};
+    for (let i = 0; i < morphNamesRef.current.length; i++) {
+      influences[morphNamesRef.current[i]] = currentInfluences.current[i] ?? 0;
+    }
+    useBodyStore.getState().setCurrentMorphInfluences(influences);
   });
 
   return <group ref={groupRef} position={[0, 0, 0]} />;
