@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "name": "Run Tests After Task",
+  "description": "Runs the full test suite after each spec task is marked as completed, ensuring no regressions were introduced.",
+  "version": "1",
+  "when": {
+    "type": "postTaskExecution"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "npx vitest run --reporter=verbose 2>&1",
+    "timeout": 30
+  }
+}

@@ -49,6 +49,10 @@ A web-based 3D body avatar that users can customize with their measurements, the
 - `src/utils/heatmapEngine.ts` — Garment coverage detection + fit score calculation + arm detection via armScore + normalYAbs gray zone disambiguation; 9 height regions with per-measurement weighting
 - `src/utils/smoothingEngine.ts` — Laplacian color smoothing for heatmap vertex colors; `buildAdjacency()` + `smoothColors()` with double-buffer strategy
 - `src/utils/fitAdvisor.ts` — Fit advisor panel logic
+- `src/utils/sizeChartEngine.ts` — Brand size chart validation, parsing, serialization, active chart resolution with default fallback
+- `src/components/GarmentShell.tsx` — Three.js garment loader via GLTFLoader, morph target sync with body, semi-transparent material, separate toggle
+- `src/data/defaultSizeCharts.ts` — Extracted default size chart data (single source of truth for sizeChartEngine)
+- `scripts/bake-garments.py` — Blender pipeline: parametric garment patterns → surface projection → morph target baking → GLB export
 - `src/data/ansur2_model.json` — Gradient boosting lookup table (29k subjects, trilinear interpolation)
 - `src/data/bodyProfiles.json` — Body type profiles with measurement offsets and morph response curves
 
@@ -160,11 +164,20 @@ armScore = normalXAbs + xAbs * 3
 - 🟡 Heatmap boundary jaggedness (inherent to vertex-based coloring — acceptable for Phase 1)
 - ❌ Need more garment types (deferred)
 
-### Phase 2: Generated Garment Shell from Specs — not started
-- Generate semi-transparent clothing shape from measurements + fit category
-- Garment sits on body as separate mesh
-- Heatmap colors the garment shell
-- Any brand can plug in their size chart
+### Phase 2: Generated Garment Shell from Specs — ~30% done (runtime pipeline working, garment models need replacement)
+- ✅ Size chart engine with brand override support (sizeChartEngine.ts, 24 tests)
+- ✅ Default size chart data extracted (defaultSizeCharts.ts)
+- ✅ Blender garment baking pipeline (bake-garments.py — pattern creation, morph targets, GLB export)
+- ✅ GarmentShell runtime component (GLB loading, morph sync, semi-transparent material)
+- ✅ Separate garment shell toggle in UI (independent from heatmap)
+- ✅ bodyStore extended (brandSizeChart, currentMorphInfluences, garmentShellEnabled)
+- ✅ heatmapEngine supports sizeChartOverride parameter
+- ✅ Agent hooks: test-on-save, ts-error-check, test-after-task
+- 🔴 Parametric tube garments are POC only — need pre-made models from Marvelous Designer/CLO3D for production quality
+- 🔴 Blender cloth simulation broken (garment flies off — coordinate space issue)
+- 🔴 Only garment-tee-M.glb generated — other types/sizes missing
+- ❌ Heatmap on garment shell (deferred — heatmap stays on body for now)
+- ❌ Real-time wrinkle shaders (Option C — deferred)
 
 ### Phase 3: Real Garment Mapping — not started
 - Map actual brand garments onto body
@@ -300,6 +313,7 @@ git push origin main
 | 001 | Pre-2026-04-12 | `.kiro/SESSION_HANDOFF_001.md` | Initial project setup, architecture, 3D avatar, ML model, heatmap Phase 1 |
 | 002 | 2026-04-12 | `.kiro/SESSION_HANDOFF_002.md` | T-shirt sleeve cutoff fix (vertex normals + armScore approach) |
 | 003 | 2026-04-12 | `.kiro/SESSION_HANDOFF_003.md` | Phase 1 refinements: better fit calc, side torso gap fix, color smoothing, jeans boundary fix |
+| 004 | 2026-04-13 | `.kiro/SESSION_HANDOFF_004.md` | Phase 2 implementation: size chart engine, Blender garment pipeline, GarmentShell component, garment shell toggle |
 
 ---
 
@@ -338,3 +352,22 @@ git push origin main
 - Jeans boundary fix: armScore-gated hand exclusion, side edge fade, wider waistband/ankle fades
 - Set up Vitest + fast-check test infrastructure, wrote 5 property-based tests
 - Phase 1 now ~95% complete — heatmap still has some boundary jaggedness but acceptable
+
+### Session 004 — 2026-04-13
+- Created Phase 2 garment shell spec (requirements, design, tasks) via requirements-first workflow
+- Implemented size chart engine: BrandSizeChart interfaces, validation, parsing, serialization, getActiveSizeChart with default fallback
+- Extracted default size charts into standalone module (defaultSizeCharts.ts)
+- Wrote 24 tests: 7 property-based (validation correctness + serialization round-trip), 11 unit, 6 integration
+- Built Blender garment baking pipeline (bake-garments.py): parametric pattern creation, surface projection onto body, morph target baking per body variant, GLB export
+- Debugged coordinate space issues: Blender GLB import uses Z-up, garment patterns must use Z as height axis, export with Y-up conversion
+- Debugged cloth simulation failure: garment flies off during sim (fell back to surface projection)
+- Built GarmentShell.tsx runtime component: GLB loading via GLTFLoader, morph sync, semi-transparent material
+- Added separate "Garment Shell" toggle in UI (independent from heatmap)
+- Extended bodyStore with garmentShellEnabled, brandSizeChart, currentMorphInfluences
+- Added sizeChartOverride parameter to computeHeatmap()
+- Fixed heatmap regression (was disabled when garmentType !== 'none')
+- Generated garment-tee-M.glb (995 verts, 8 shape keys, 97KB) — renders on body as POC
+- Set up agent hooks: test-on-save, ts-error-check, test-after-task
+- Added production readiness notes to project master (SMPL, ML draping, datasets, fabric physics)
+- Conclusion: parametric tube garments are POC only — need pre-made models from Marvelous Designer/CLO3D for production quality
+- Next: design-first spec for realistic garment model pipeline
