@@ -207,6 +207,17 @@ armScore = normalXAbs + xAbs * 3
 - For Phase 2 garment shell: generate from parametric patterns (our own) or use an existing garment simulation library?
 - Photoroom/Fitroom integration timing — Phase 3 or later?
 
+### ⚠️ Production Readiness — Must Revisit Before Shopify Deployment
+Phase 2 starts with pre-baked Blender cloth sim (Option A) as a practical foundation, but for a production-quality Shopify product this WILL need to be revisited. The following must be evaluated before going live:
+- **SMPL / SHAPY**: Commercial license (Meshcapade €1,500+/yr for micro) — standardized vertex topology makes garment fitting far more reliable than MakeHuman morphs. Need to evaluate if the accuracy gain justifies the cost and server dependency.
+- **ML-based garment draping**: Neural cloth simulation (LUIVITON, DiffAvatar, learning-based drape prediction) could replace or augment pre-baked sim for more realistic results across body shapes. Requires training data.
+- **Larger clothing datasets**: GarmentCodeData (115k patterns, ECCV 2024), real brand measurement databases, and fabric property datasets for training ML drape models and expanding garment type coverage beyond 4 types.
+- **Real-time wrinkle shaders** (Option C): Displacement/normal map shaders for cloth-like surface detail on top of baked shapes — planned as Phase 2 extension.
+- **Fabric physics parameters**: Need real-world fabric testing data (weight, stiffness, bending) per material type for accurate simulation — cotton, denim, silk, polyester, etc.
+- **Body model accuracy**: Current MakeHuman + ANSUR/NHANES model may not be accurate enough for production. SMPL trained on 10k+ 3D body scans has better shape space coverage.
+- **Population diversity**: Indian population data, female body model, age-based composition — all needed for global Shopify deployment.
+- **Decision point**: After Phase 2 prototype works end-to-end with baked sim, do a formal evaluation sprint comparing baked-sim quality vs. SMPL+ML approach before committing to production architecture.
+
 ## Miscellaneous Fixes & TODO
 
 ### Pending Fixes
