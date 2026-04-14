@@ -3,6 +3,8 @@ import type { BrandSizeChart } from '../utils/sizeChartEngine';
 
 export type Gender = 'male' | 'female';
 export type BodyType = 'slim' | 'average' | 'athletic' | 'curvy' | 'heavy';
+export type BodyComposition = 'athletic' | 'average' | 'heavy';
+export type BodyEngineType = 'smpl-refined' | 'makehuman-only';
 
 export interface UserInputs {
   heightCm: number;
@@ -10,6 +12,7 @@ export interface UserInputs {
   age: number;
   gender: Gender;
   bodyType: BodyType;
+  bodyComposition: BodyComposition;
 
   bustCm: number | null;
   waistCm: number | null;
@@ -24,6 +27,7 @@ export const defaultInputs: UserInputs = {
   age: 28,
   gender: 'male',
   bodyType: 'average',
+  bodyComposition: 'average',
   bustCm: null,
   waistCm: null,
   hipCm: null,
@@ -36,6 +40,7 @@ export type GarmentType = 'tee' | 'oxford' | 'slim-jeans' | 'straight-jeans' | '
 
 interface BodyStore {
   inputs: UserInputs;
+  bodyEngine: BodyEngineType;
   morphOverrides: Record<string, number> | null;
   heatmapEnabled: boolean;
   garmentShellEnabled: boolean;
@@ -46,6 +51,8 @@ interface BodyStore {
   currentMorphInfluences: Record<string, number>;
   setInput: <K extends keyof UserInputs>(key: K, value: UserInputs[K]) => void;
   setInputs: (partial: Partial<UserInputs>) => void;
+  setBodyComposition: (v: BodyComposition) => void;
+  setBodyEngine: (v: BodyEngineType) => void;
   setMorphOverride: (name: string, value: number) => void;
   clearMorphOverrides: () => void;
   setHeatmapEnabled: (v: boolean) => void;
@@ -60,6 +67,7 @@ interface BodyStore {
 
 export const useBodyStore = create<BodyStore>((set) => ({
   inputs: { ...defaultInputs },
+  bodyEngine: 'smpl-refined' as BodyEngineType,
   morphOverrides: null,
   heatmapEnabled: false,
   garmentShellEnabled: false,
@@ -75,6 +83,11 @@ export const useBodyStore = create<BodyStore>((set) => ({
   setInputs: (partial) =>
     set((s) => ({ inputs: { ...s.inputs, ...partial } })),
 
+  setBodyComposition: (v) =>
+    set((s) => ({ inputs: { ...s.inputs, bodyComposition: v } })),
+
+  setBodyEngine: (v) => set({ bodyEngine: v }),
+
   setMorphOverride: (name, value) =>
     set((s) => ({
       morphOverrides: { ...(s.morphOverrides ?? {}), [name]: value },
@@ -89,5 +102,5 @@ export const useBodyStore = create<BodyStore>((set) => ({
   setBrandSizeChart: (chart) => set({ brandSizeChart: chart }),
   setCurrentMorphInfluences: (influences) => set({ currentMorphInfluences: influences }),
 
-  reset: () => set({ inputs: { ...defaultInputs }, morphOverrides: null, heatmapEnabled: false, brandSizeChart: null, currentMorphInfluences: {} }),
+  reset: () => set({ inputs: { ...defaultInputs }, bodyEngine: 'smpl-refined' as BodyEngineType, morphOverrides: null, heatmapEnabled: false, brandSizeChart: null, currentMorphInfluences: {} }),
 }));

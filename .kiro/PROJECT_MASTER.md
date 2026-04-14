@@ -32,22 +32,39 @@ A web-based 3D body avatar that users can customize with their measurements, the
 ## Architecture
 
 ### 3D Avatar System
-- **Model:** MakeHuman male export (FBX) → Blender script generates morph targets → GLB
-- **Source FBX:** `public/models/male-base.fbx` (MakeHuman, default male, standing02 pose, default skeleton, with skin texture)
-- **Generated GLB:** `public/models/human-male.glb` (214k vertices, 2 subdivision levels, 25 morph targets + skin texture)
-- **Blender script:** `scripts/generate-morphs.py` — imports FBX, fixes orientation (-90° X rotation), subdivides, generates morph targets with Laplacian smoothing, exports GLB
+- **Dual Engine:** User can toggle between SMPL and MakeHuman body models via UI
+- **MakeHuman Model:** FBX → Blender morph targets → GLB (214k vertices, 25 morphs, skin texture)
+- **SMPL Model:** SMPL pickle → Blender script → GLB (165k vertices, 10 beta PCs as morph targets, skin texture)
+- **Source FBX:** `public/models/male-base.fbx` (MakeHuman, default male)
+- **Source SMPL:** Downloaded from smpl.is.tue.mpg.de (v1.1.0, male, 300 shape PCs — we use first 10)
+- **Generated MakeHuman GLB:** `public/models/human-male.glb` (214k vertices, 25 morph targets)
+- **Generated SMPL GLB:** `public/models/human-smpl.glb` (165k vertices, 10 beta morph targets, 53.6 MB)
+- **SMPL Browser Binary:** `public/models/smpl/smpl_model.bin` (1.58 MB — template + blend shapes + faces + landmarks)
+- **Blender scripts:** `scripts/generate-morphs.py` (MakeHuman), `scripts/generate-smpl-model.py` (SMPL)
 - **Blender path:** `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`
 
 ### Key Files
-- `src/components/BodyModel.tsx` — Three.js mesh, morph target animation, heatmap vertex coloring, reads vertex normals (X and Y) for arm detection, Laplacian color smoothing via smoothingEngine
-- `src/components/UI/ControlPanel.tsx` — All UI controls (body inputs, garment selection, heatmap toggle, direct morph sliders)
+- `src/components/BodyModel.tsx` — Dual model loading (MakeHuman + SMPL GLB), morph target animation, SMPL beta driving, heatmap vertex coloring, engine initialization
+- `src/components/UI/ControlPanel.tsx` — Body engine toggle (top), body composition selector, body inputs, garment selection, heatmap toggle, morph sliders
 - `src/components/Scene.tsx` — Three.js canvas, lighting, grid
 - `src/components/Controls.tsx` — OrbitControls camera
 - `src/components/Lighting.tsx` — Studio lighting setup
-- `src/stores/bodyStore.ts` — Zustand store (user inputs, morph overrides, heatmap state)
-- `src/utils/morphMapper.ts` — Converts user inputs → morph target influences using ANSUR II + NHANES ML model; `estimatedMeasurements()` returns 12 fields including all ML-predicted measurements
-- `src/utils/heatmapEngine.ts` — Garment coverage detection + fit score calculation + arm detection via armScore + normalYAbs gray zone disambiguation; 9 height regions with per-measurement weighting
-- `src/utils/smoothingEngine.ts` — Laplacian color smoothing for heatmap vertex colors; `buildAdjacency()` + `smoothColors()` with double-buffer strategy
+- `src/components/GarmentShell.tsx` — Garment loader with binding map deformation + morph-sync fallback, opaque fabric materials
+- `src/stores/bodyStore.ts` — Zustand store (user inputs, bodyComposition, bodyEngine, morph overrides, heatmap state)
+- `src/utils/morphMapper.ts` — Converts user inputs → morph target influences; supports SMPL measurements + body composition boosts
+- `src/utils/heatmapEngine.ts` — Garment coverage + fit scoring + arm detection; `computeHeatmapSmpl()` for SMPL landmark-based regions
+- `src/utils/smoothingEngine.ts` — Laplacian color smoothing for heatmap vertex colors
+- `src/utils/smplForwardPass.ts` — Pure TS SMPL forward pass, binary parser, landmark helper
+- `src/utils/smplRegressor.ts` — Measurement-to-beta regression with body composition (ONNX + lookup fallback)
+- `src/utils/measurementExtractor.ts` — Extracts circumferences from SMPL mesh at anatomical heights
+- `src/utils/bindingMapCodec.ts` — Binary serialization for garment binding maps
+- `src/utils/garmentDeformer.ts` — Barycentric garment deformation with degenerate fallback
+- `src/utils/bodyEngine.ts` — BodyEngine abstraction (SmplEngine + MakeHumanEngine), event bus
+- `src/utils/engineInit.ts` — Graceful degradation hierarchy
+- `src/utils/garmentRegistry.ts` — Static garment template registry
+- `scripts/generate-smpl-model.py` — Blender: SMPL pickle → subdivided GLB with beta morph targets + skin texture
+- `scripts/export-smpl-assets.py` — Converts SMPL pickle → browser binary + landmarks JSON
+- `scripts/bake-garment-bindings.py` — Computes barycentric binding maps for garments on SMPL body
 - `src/utils/fitAdvisor.ts` — Fit advisor panel logic
 - `src/utils/sizeChartEngine.ts` — Brand size chart validation, parsing, serialization, active chart resolution with default fallback
 - `src/components/GarmentShell.tsx` — Three.js garment loader via GLTFLoader, morph target sync with body, semi-transparent material, separate toggle
@@ -314,6 +331,7 @@ git push origin main
 | 002 | 2026-04-12 | `.kiro/SESSION_HANDOFF_002.md` | T-shirt sleeve cutoff fix (vertex normals + armScore approach) |
 | 003 | 2026-04-12 | `.kiro/SESSION_HANDOFF_003.md` | Phase 1 refinements: better fit calc, side torso gap fix, color smoothing, jeans boundary fix |
 | 004 | 2026-04-13 | `.kiro/SESSION_HANDOFF_004.md` | Phase 2 implementation: size chart engine, Blender garment pipeline, GarmentShell component, garment shell toggle |
+| 005 | 2026-04-14 | `.kiro/SESSION_HANDOFF_005.md` | SMPL integration: full infrastructure spec, SMPL model generation (165k verts, 10 betas), dual engine toggle, body composition selector |
 
 ---
 
@@ -371,3 +389,19 @@ git push origin main
 - Added production readiness notes to project master (SMPL, ML draping, datasets, fabric physics)
 - Conclusion: parametric tube garments are POC only — need pre-made models from Marvelous Designer/CLO3D for production quality
 - Next: design-first spec for realistic garment model pipeline
+
+### Session 005 — 2026-04-14 (Part 1)
+- Created SMPL body & garment pipeline spec (requirements-first: 12 requirements, design with 11 correctness properties, 22 tasks)
+- Built full SMPL infrastructure: forward pass, regressor, measurement extractor, binding map codec, garment deformer, body engine abstraction, engine init, garment registry
+- Added body composition selector (Athletic/Average/Heavy) to UI and store
+- Added body engine toggle (SMPL Refined / MakeHuman) to top of control panel
+- Exported SMPL model from pickle to browser binary (smpl_model.bin, 1.58 MB)
+- Generated SMPL GLB via Blender: 165k vertices (2x subdivision), 10 beta morph targets, skin texture, 53.6 MB
+- Updated BodyModel.tsx for dual model loading — switches between MakeHuman and SMPL GLB based on engine toggle
+- Updated GarmentShell.tsx with opaque fabric materials (cotton/denim) and binding map deformation support
+- Updated heatmapEngine.ts with SMPL landmark-based region mapping
+- Updated morphMapper.ts with SMPL measurements path + body composition morph boosts
+- 123 tests passing (90 original + 33 new including 11 property-based tests)
+- Deleted broken agent hooks (test-on-save, ts-error-check, test-after-task)
+- SMPL model renders standing upright with skin texture — basic beta morph targets working
+- Next: new spec for SMPL customizability (matching MakeHuman feature parity — height/weight mapping, heatmap, negative betas, proper UV mapping)

@@ -1,15 +1,5 @@
 import type { GarmentType, FitPreference } from '../stores/bodyStore';
-
-/** Garment coverage: which body height ranges does this garment cover? */
-interface GarmentCoverage {
-  regions: Array<{
-    name: string;
-    hMin: number;  // normalized height 0-1
-    hMax: number;
-    bodyMeasurement: string;  // key in estimated measurements
-    garmentMeasurement: number;  // garment measurement in cm for this size
-  }>;
-}
+import type { BodyEngine } from './bodyEngine';
 
 /** Garment size chart */
 interface GarmentSizeChart {
@@ -305,6 +295,227 @@ export function fitScoreToColor(score: number): [number, number, number] {
   // Balanced: green
   const t = Math.abs(score) / 0.1;
   return [0.2 + t * 0.3, 0.75 - t * 0.1, 0.3 + t * 0.1];
+}
+
+// ── SMPL landmark-based region mapping ──────────────────────────────
+
+/** Landmark names used to derive anatomical region heights from SMPL mesh */
+const LANDMARK_TO_MEASUREMENT: Array<{
+  landmark: string;
+  measurement: string;
+  measurementWeight: number;
+  hWidth: number;
+}> = [
+  { landmark: 'neck_base',     measurement: 'neck',     measurementWeight: 0.5, hWidth: 0.03 },
+  { landmark: 'left_shoulder', measurement: 'shoulder', measurementWeight: 0.9, hWidth: 0.03 },
+  { landmark: 'chest_center',  measurement: 'chest',    measurementWeight: 1.0, hWidth: 0.05 },
+  { landmark: 'left_shoulder', measurement: 'bicep',    measurementWeight: 0.6, hWidth: 0.04 }, // bicep near shoulder height
+  { landmark: 'waist_center',  measurement: 'waist',    measurementWeight: 1.0, hWidth: 0.04 },
+  { landmark: 'hip_center',    measurement: 'hip',      measurementWeight: 0.9, hWidth: 0.04 },
+  { landmark: 'left_knee',     measurement: 'thigh',    measurementWeight: 0.9, hWidth: 0.06 },
+  { landmark: 'left_ankle',    measurement: 'calf',     measurementWeight: 0.5, hWidth: 0.05 },
+];
+
+/**
+ * Build height-to-measurement region map from SMPL landmark positions.
+ * Converts absolute landmark Y positions to normalized heights [0, 1].
+ */
+function buildSmplRegionMap(
+  bodyEngine: BodyEngine,
+): Array<{ hCenter: number; hWidth: number; measurement: string; measurementWeight: number }> | null {
+  // Get body height from vertices
+  const verts = bodyEngine.getVertexPositions();
+  if (verts.length === 0) return null;
+
+  let minY = Infinity, maxY = -Infinity;
+  for (let i = 1; i < verts.length; i += 3) {
+    if (verts[i] < minY) minY = verts[i];
+    if (verts[i] > maxY) maxY = verts[i];
+  }
+  const bodyHeight = maxY - minY;
+  if (bodyHeight < 0.01) return null;
+
+  const regions: Array<{ hCenter: number; hWidth: number; measurement: string; measurementWeight: number }> = [];
+
+  for (const entry of LANDMARK_TO_MEASUREMENT) {
+    const pos = bodyEngine.getLandmark(entry.landmark);
+    if (pos.lengthSq() < 1e-10) continue; // landmark not available
+
+    const normalizedH = (pos.y - minY) / bodyHeight;
+    regions.push({
+      hCenter: normalizedH,
+      hWidth: entry.hWidth,
+      measurement: entry.measurement,
+      measurementWeight: entry.measurementWeight,
+    });
+  }
+
+  // Add wrist region — estimate from shoulder height offset
+  const shoulderPos = bodyEngine.getLandmark('left_shoulder');
+  if (shoulderPos.lengthSq() > 1e-10) {
+    const wristH = ((shoulderPos.y - minY) / bodyHeight) - 0.30; // wrist ~30% below shoulder
+    regions.push({ hCenter: Math.max(0.05, wristH), hWidth: 0.03, measurement: 'wrist', measurementWeight: 0.4 });
+  }
+
+  return regions.length > 0 ? regions : null;
+}
+
+/**
+ * Compute heatmap using SMPL vertex landmark positions for anatomical region mapping.
+ * Falls back to the standard normalized-height approach if landmarks are unavailable.
+ *
+ * The fit score algorithm is identical — only the region height centers change.
+ * Arm detection (armScore) uses the same formula, adapted to work with SMPL vertex normals.
+ *
+ * Requirements: 8.1, 8.2, 8.3, 8.4, 8.5
+ */
+export function computeHeatmapSmpl(
+  garmentType: GarmentType,
+  size: string,
+  fitPref: FitPreference,
+  bodyMeasurements: BodyMeasurementsInput,
+  bodyEngine: BodyEngine,
+  sizeChartOverride?: Record<string, number> | null,
+): HeatmapResult | null {
+  // Try to build SMPL landmark-based region map
+  const smplRegions = buildSmplRegionMap(bodyEngine);
+
+  if (!smplRegions || smplRegions.length === 0) {
+    // Fall back to standard heuristic-based heatmap
+    return computeHeatmap(garmentType, size, fitPref, bodyMeasurements, sizeChartOverride);
+  }
+
+  if (garmentType === 'none') return null;
+  const garment = garments[garmentType];
+  if (!garment) return null;
+  const sizeData = sizeChartOverride ?? garment.sizes[size];
+  if (!sizeData) return null;
+
+  const bodyMap: Record<string, number> = {
+    chest: bodyMeasurements.bustCm,
+    waist: bodyMeasurements.waistCm,
+    hip: bodyMeasurements.hipCm,
+    thigh: bodyMeasurements.thighCm,
+    shoulder: bodyMeasurements.shoulderCm,
+    neck: bodyMeasurements.neckCm,
+    bicep: bodyMeasurements.bicepCm,
+    calf: bodyMeasurements.calfCm,
+    wrist: bodyMeasurements.wristCm,
+    inseam: bodyMeasurements.inseamCm,
+  };
+
+  // Compute ease and fit score using SMPL-derived region heights
+  const regionFits: Array<{ hCenter: number; hWidth: number; fitScore: number; measurementWeight: number }> = [];
+
+  for (const region of smplRegions) {
+    const garmentVal = sizeData[region.measurement];
+    const bodyVal = bodyMap[region.measurement];
+    if (garmentVal == null || bodyVal == null) continue;
+
+    const ease = garmentVal - bodyVal;
+    const [idealMin, idealMax] = easeTargets[fitPref][region.measurement] ?? [4, 10];
+    const idealCenter = (idealMin + idealMax) / 2;
+    const idealRange = (idealMax - idealMin) / 2;
+
+    let fitScore: number;
+    if (ease < idealMin) {
+      fitScore = -(idealMin - ease) / Math.max(1, idealRange * 2);
+    } else if (ease > idealMax) {
+      fitScore = (ease - idealMax) / Math.max(1, idealRange * 2);
+    } else {
+      fitScore = (ease - idealCenter) / Math.max(1, idealRange) * 0.3;
+    }
+
+    fitScore = Math.max(-1, Math.min(1, fitScore));
+    regionFits.push({ hCenter: region.hCenter, hWidth: region.hWidth, fitScore, measurementWeight: region.measurementWeight });
+  }
+
+  const { hMin, hMax } = garment.coverage;
+  const isTop = garment.type === 'top';
+
+  // The getVertexFit function uses the same coverage/arm detection logic
+  // but with SMPL-derived region centers for fit score blending
+  return {
+    getVertexFit(h: number, xAbs: number, yPos: number, distFromCenter: number, normalXAbs: number = 0, normalYAbs: number = 0) {
+      // Coverage logic identical to standard path
+      if (isTop) {
+        if (h < hMin) return { covered: false, fitScore: 0, edgeFade: 0 };
+        if (h > 0.83) return { covered: false, fitScore: 0, edgeFade: 0 };
+
+        const neckline = garment.neckline ?? 'round';
+        if (neckline === 'round') {
+          if (h > 0.78 && distFromCenter < 0.06) return { covered: false, fitScore: 0, edgeFade: 0 };
+        } else if (neckline === 'vneck') {
+          if (h > 0.78 && distFromCenter < 0.06) return { covered: false, fitScore: 0, edgeFade: 0 };
+          if (h > 0.73 && h < 0.80 && distFromCenter < 0.04 && yPos > 0) return { covered: false, fitScore: 0, edgeFade: 0 };
+        } else {
+          if (h > 0.80 && distFromCenter < 0.05) return { covered: false, fitScore: 0, edgeFade: 0 };
+        }
+
+        if (distFromCenter > 0.22 && h < 0.52) return { covered: false, fitScore: 0, edgeFade: 0 };
+
+        // Arm detection using armScore — same formula, works with SMPL vertex normals
+        const sleeveEnd = garment.sleeveEnd;
+        if (sleeveEnd != null && h < sleeveEnd) {
+          const armScore = normalXAbs + xAbs * 3;
+          if (armScore > 1.3) {
+            return { covered: false, fitScore: 0, edgeFade: 0 };
+          } else if (armScore >= 1.0 && normalYAbs <= 0.25) {
+            return { covered: false, fitScore: 0, edgeFade: 0 };
+          }
+        }
+      } else {
+        if (h > hMax) return { covered: false, fitScore: 0, edgeFade: 0 };
+        if (h < 0.04) return { covered: false, fitScore: 0, edgeFade: 0 };
+        if (distFromCenter > 0.22 && h > 0.35 && h < 0.55) {
+          const armScore = normalXAbs + xAbs * 3;
+          if (armScore > 1.0) {
+            return { covered: false, fitScore: 0, edgeFade: 0 };
+          }
+        }
+      }
+
+      // Blend fit scores from SMPL-derived regions using Gaussian weights
+      let totalWeight = 0;
+      let weightedScore = 0;
+      for (const rf of regionFits) {
+        const dist = Math.abs(h - rf.hCenter);
+        const gaussianW = Math.exp(-(dist * dist) / (2 * rf.hWidth * rf.hWidth));
+        const w = gaussianW * rf.measurementWeight;
+        totalWeight += w;
+        weightedScore += w * rf.fitScore;
+      }
+
+      const fitScore = totalWeight > 0 ? weightedScore / totalWeight : 0;
+
+      // Edge fade — same logic as standard path
+      let edgeFade = 1.0;
+      if (isTop) {
+        const hemDist = (h - hMin) / 0.015;
+        if (hemDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, hemDist));
+        const neckDist = (0.82 - h) / 0.015;
+        if (neckDist < 1 && h > 0.75) edgeFade = Math.min(edgeFade, Math.max(0, neckDist));
+        const sleeveEnd = garment.sleeveEnd ?? 0.62;
+        const armScore = normalXAbs + xAbs * 3;
+        const isArm = armScore > 1.3 || (armScore >= 1.0 && normalYAbs <= 0.25);
+        if (isArm) {
+          const sleeveDist = (h - sleeveEnd) / 0.015;
+          if (sleeveDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, sleeveDist));
+        }
+      } else {
+        const waistDist = (hMax - h) / 0.02;
+        if (waistDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, waistDist));
+        const ankleDist = (h - 0.04) / 0.02;
+        if (ankleDist < 1) edgeFade = Math.min(edgeFade, Math.max(0, ankleDist));
+        if (distFromCenter > 0.18 && h > 0.35 && h < 0.55) {
+          const sideDist = (0.22 - distFromCenter) / 0.04;
+          if (sideDist < 1 && sideDist >= 0) edgeFade = Math.min(edgeFade, Math.max(0, sideDist));
+        }
+      }
+
+      return { covered: true, fitScore, edgeFade };
+    },
+  };
 }
 
 export function getGarmentOptions() {

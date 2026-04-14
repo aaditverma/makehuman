@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useBodyStore, type Gender, type BodyType, type GarmentType, type FitPreference } from '../../stores/bodyStore';
+import { useBodyStore, type Gender, type BodyType, type BodyComposition, type BodyEngineType, type GarmentType, type FitPreference } from '../../stores/bodyStore';
 import { estimatedMeasurements } from '../../utils/morphMapper';
 import { getGarmentOptions } from '../../utils/heatmapEngine';
 
@@ -11,10 +11,22 @@ const bodyTypes: { value: BodyType; label: string }[] = [
   { value: 'heavy', label: 'Heavy' },
 ];
 
+const bodyCompositions: { value: BodyComposition; label: string; desc: string }[] = [
+  { value: 'athletic', label: 'Athletic', desc: 'Muscular, low body fat' },
+  { value: 'average', label: 'Average', desc: 'Moderate muscle & fat' },
+  { value: 'heavy', label: 'Heavy / Soft', desc: 'Higher body fat' },
+];
+
+const engineOptions: { value: BodyEngineType; label: string }[] = [
+  { value: 'smpl-refined', label: 'SMPL Refined' },
+  { value: 'makehuman-only', label: 'MakeHuman' },
+];
+
 export function ControlPanel() {
   const { inputs, setInput, reset } = useBodyStore();
   const { heatmapEnabled, setHeatmapEnabled, garmentType, setGarmentType, garmentSize, setGarmentSize, fitPreference, setFitPreference } = useBodyStore();
   const { garmentShellEnabled, setGarmentShellEnabled } = useBodyStore();
+  const { bodyEngine, setBodyEngine, setBodyComposition } = useBodyStore();
   const estimated = useMemo(() => estimatedMeasurements(inputs), [inputs]);
   const garmentOptions = useMemo(() => getGarmentOptions(), []);
 
@@ -24,6 +36,31 @@ export function ControlPanel() {
       <div className="p-4 border-b border-gray-700">
         <h1 className="text-xl font-bold text-white mb-1">Body Profile</h1>
         <p className="text-xs text-gray-400">Enter your details to shape the avatar</p>
+      </div>
+
+      {/* Body Engine Toggle — top of panel */}
+      <div className="p-4 border-b border-gray-700 space-y-2">
+        <h2 className="text-sm font-medium text-gray-300">Body Engine</h2>
+        <div className="flex gap-2">
+          {engineOptions.map((eo) => (
+            <button
+              key={eo.value}
+              onClick={() => setBodyEngine(eo.value)}
+              className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                bodyEngine === eo.value
+                  ? 'bg-teal-600 text-white'
+                  : 'bg-teal-600/20 text-teal-300 hover:bg-teal-600/40'
+              }`}
+            >
+              {eo.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-gray-500">
+          {bodyEngine === 'smpl-refined'
+            ? 'SMPL model — shape driven by 10 beta PCs from 3D body scans'
+            : 'MakeHuman model — shape driven by 25 hand-crafted morph targets'}
+        </p>
       </div>
 
       {/* Heatmap Controls */}
@@ -209,6 +246,30 @@ export function ControlPanel() {
           </div>
         </section>
 
+        {/* Body Composition */}
+        <section className="space-y-3">
+          <h2 className="text-sm font-medium text-gray-300">Body Composition</h2>
+          <div className="flex gap-2">
+            {bodyCompositions.map((bc) => (
+              <button
+                key={bc.value}
+                onClick={() => setBodyComposition(bc.value)}
+                title={bc.desc}
+                className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  inputs.bodyComposition === bc.value
+                    ? 'bg-amber-600 text-white'
+                    : 'bg-amber-600/20 text-amber-300 hover:bg-amber-600/40'
+                }`}
+              >
+                {bc.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-gray-500">
+            Distinguishes muscular vs soft builds at the same weight
+          </p>
+        </section>
+
         {/* Custom Measurements (optional) */}
         <section className="space-y-3">
           <h2 className="text-sm font-medium text-gray-300">Custom Measurements</h2>
@@ -269,7 +330,7 @@ export function ControlPanel() {
         </section>
 
         {/* Direct Morph Controls */}
-        <MorphSliders />
+        <MorphSliders bodyEngine={bodyEngine} />
       </div>
 
       {/* Footer */}
@@ -295,9 +356,14 @@ const MORPH_NAMES = [
   'UpperArmSag', 'DoubleChin', 'InnerThighFat',
 ];
 
-function MorphSliders() {
+function MorphSliders({ bodyEngine }: { bodyEngine: BodyEngineType }) {
   const { morphOverrides, setMorphOverride, clearMorphOverrides } = useBodyStore();
   const [open, setOpen] = useState(false);
+
+  // Hide morph sliders when SMPL engine is active (Req 11.5)
+  if (bodyEngine === 'smpl-refined') {
+    return null;
+  }
 
   return (
     <section className="space-y-2">

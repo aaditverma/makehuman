@@ -1,16 +1,21 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useState } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useBodyStore } from '../stores/bodyStore';
 import { inputsToMorphs, estimatedMeasurements } from '../utils/morphMapper';
-import { computeHeatmap, fitScoreToColor } from '../utils/heatmapEngine';
+import { computeHeatmap, computeHeatmapSmpl, fitScoreToColor } from '../utils/heatmapEngine';
 import { buildAdjacency, smoothColors, type AdjacencyMap } from '../utils/smoothingEngine';
+import { initializeEngine } from '../utils/engineInit';
+import { SmplEngine, MakeHumanEngine } from '../utils/bodyEngine';
+import type { BodyEngine } from '../utils/bodyEngine';
+import type { ExtractedMeasurements } from '../utils/measurementExtractor';
 
 const damp = (cur: number, tgt: number, spd: number, dt: number) =>
   cur + (tgt - cur) * (1 - Math.exp(-spd * dt));
 
 useGLTF.preload('/models/human-male.glb');
+useGLTF.preload('/models/human-smpl.glb');
 
 const SMOOTH = 10;
 
@@ -22,7 +27,12 @@ export function BodyModel() {
   const garmentType = useBodyStore((s) => s.garmentType);
   const garmentSize = useBodyStore((s) => s.garmentSize);
   const fitPreference = useBodyStore((s) => s.fitPreference);
-  const { scene } = useGLTF('/models/human-male.glb');
+  const bodyEngineType = useBodyStore((s) => s.bodyEngine);
+  
+  // Load both models — use the one matching the active engine
+  const mhGltf = useGLTF('/models/human-male.glb');
+  const smplGltf = useGLTF('/models/human-smpl.glb');
+  const scene = bodyEngineType === 'smpl-refined' ? smplGltf.scene : mhGltf.scene;
 
   const meshRef = useRef<THREE.Mesh | null>(null);
   const morphNamesRef = useRef<string[]>([]);
@@ -36,6 +46,57 @@ export function BodyModel() {
   const heatmapMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
   const bodyHeightRange = useRef<{ min: number; max: number }>({ min: 0, max: 1.73 });
   const adjacencyRef = useRef<AdjacencyMap | null>(null);
+
+  // SMPL refinement state
+  const [bodyEngine, setBodyEngine] = useState<BodyEngine | null>(null);
+  const smplMeasurementsRef = useRef<ExtractedMeasurements | null>(null);
+
+  // Initialize body engine on mount or engine type change
+  useEffect(() => {
+    let cancelled = false;
+
+    async function initEngine() {
+      try {
+        const result = await initializeEngine(bodyEngineType);
+        if (!cancelled) {
+          // If MakeHuman engine, attach geometry when mesh is available
+          if (result.engine instanceof MakeHumanEngine && meshRef.current) {
+            result.engine.setGeometry(meshRef.current.geometry);
+          }
+          setBodyEngine(result.engine);
+          console.log(`[BodyModel] Engine initialized: ${result.level}`);
+        }
+      } catch (e) {
+        console.warn('[BodyModel] Engine init failed, using MakeHuman fallback:', e);
+        if (!cancelled) {
+          const fallback = new MakeHumanEngine();
+          if (meshRef.current) fallback.setGeometry(meshRef.current.geometry);
+          setBodyEngine(fallback);
+        }
+      }
+    }
+
+    initEngine();
+    return () => { cancelled = true; };
+  }, [bodyEngineType]);
+
+  // Run SMPL refinement when inputs change (if SMPL engine available)
+  useEffect(() => {
+    if (!bodyEngine) {
+      smplMeasurementsRef.current = null;
+      return;
+    }
+
+    // Update the body engine with current inputs (including bodyComposition)
+    bodyEngine.update(inputs);
+
+    // Extract refined measurements if SMPL engine
+    if (bodyEngine instanceof SmplEngine) {
+      smplMeasurementsRef.current = bodyEngine.lastMeasurements;
+    } else {
+      smplMeasurementsRef.current = null;
+    }
+  }, [bodyEngine, inputs]);
 
   const clonedScene = useMemo(() => scene.clone(true), [scene]);
 
@@ -116,23 +177,43 @@ export function BodyModel() {
     return () => { groupRef.current?.remove(clonedScene); };
   }, [clonedScene]);
 
-  // Morph influences
+  // Morph influences — SMPL betas or MakeHuman morphs depending on engine
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh?.morphTargetDictionary) return;
 
-    const morphs = morphOverrides ?? inputsToMorphs(inputs);
-    morphNamesRef.current.forEach((name, i) => {
-      targetInfluences.current[i] = morphs[name] ?? 0;
-    });
+    if (bodyEngineType === 'smpl-refined' && bodyEngine instanceof SmplEngine) {
+      // SMPL mode: drive Beta0-Beta9 morph targets directly from regressor
+      const betas = bodyEngine.currentBetas;
+      morphNamesRef.current.forEach((name, i) => {
+        if (name.startsWith('Beta')) {
+          const betaIdx = parseInt(name.replace('Beta', ''), 10);
+          // Morph influence 0-1 maps to beta 0-3 (BETA_SCALE in the Blender script)
+          // Regressor outputs betas in [-3, 3], so we map to [0, 1] for positive
+          // and use negative morph targets if needed
+          // For now: influence = beta / 3, clamped to [0, 1]
+          const betaVal = betaIdx < betas.length ? betas[betaIdx] : 0;
+          targetInfluences.current[i] = Math.max(0, Math.min(1, betaVal / 3.0));
+        } else {
+          targetInfluences.current[i] = 0;
+        }
+      });
+    } else {
+      // MakeHuman mode: use existing morph mapper
+      const smplMeas = smplMeasurementsRef.current;
+      const morphs = morphOverrides ?? inputsToMorphs(inputs, smplMeas);
+      morphNamesRef.current.forEach((name, i) => {
+        targetInfluences.current[i] = morphs[name] ?? 0;
+      });
+    }
 
     const heightRatio = inputs.heightCm / 175;
     const widthCompensation = 1 + (1 - heightRatio) * 0.3;
     targetHeightScale.current = heightRatio;
     targetWidthScale.current = widthCompensation;
-  }, [inputs, morphOverrides]);
+  }, [inputs, morphOverrides, bodyEngine, bodyEngineType]);
 
-  // Heatmap
+  // Heatmap — use SMPL landmark-based coverage when SMPL engine active
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
@@ -143,9 +224,18 @@ export function BodyModel() {
       return;
     }
 
-    // Always render heatmap on body (garment shell heatmap is additive, not a replacement)
-    const measurements = estimatedMeasurements(inputs);
-    const heatmap = computeHeatmap(garmentType, garmentSize, fitPreference, measurements);
+    // Use SMPL-refined measurements when available
+    const smplMeas = smplMeasurementsRef.current;
+    const measurements = estimatedMeasurements(inputs, smplMeas);
+
+    // Use SMPL landmark-based heatmap when body engine is available and is SMPL
+    let heatmap;
+    if (bodyEngine && bodyEngine instanceof SmplEngine) {
+      heatmap = computeHeatmapSmpl(garmentType, garmentSize, fitPreference, measurements, bodyEngine);
+    } else {
+      heatmap = computeHeatmap(garmentType, garmentSize, fitPreference, measurements);
+    }
+
     if (!heatmap) {
       if (skinMaterialRef.current) mesh.material = skinMaterialRef.current;
       return;
@@ -209,7 +299,7 @@ export function BodyModel() {
       heatmapSkinMat.vertexColors = true;
       mesh.material = heatmapSkinMat;
     }
-  }, [heatmapEnabled, garmentType, garmentSize, fitPreference, inputs]);
+  }, [heatmapEnabled, garmentType, garmentSize, fitPreference, inputs, bodyEngine]);
 
   // Animation
   useFrame((_, delta) => {

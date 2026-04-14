@@ -1,4 +1,5 @@
-import type { UserInputs, Gender, BodyType } from '../stores/bodyStore';
+import type { UserInputs, Gender, BodyType, BodyComposition } from '../stores/bodyStore';
+import type { ExtractedMeasurements } from './measurementExtractor';
 import model from '../data/ansur2_model.json';
 import profileData from '../data/bodyProfiles.json';
 
@@ -60,23 +61,72 @@ function getBodyTypeData(bodyType: BodyType) {
 }
 
 /**
+ * Body composition morph boosts for MakeHuman-only mode (no SMPL measurements).
+ * Maps bodyComposition to existing morph modifiers.
+ */
+const BODY_COMPOSITION_BOOSTS: Record<BodyComposition, Record<string, number>> = {
+  athletic: {
+    Muscular: 0.3,
+    WiderShoulders: 0.2,
+    NarrowerWaist: 0.15,
+    BiggerStomach: -0.2,
+  },
+  average: {},
+  heavy: {
+    Heavier: 0.2,
+    BiggerStomach: 0.25,
+    LoveHandles: 0.15,
+    Muscular: -0.2,
+  },
+};
+
+/**
  * Converts user inputs into morph target influences using the
  * gradient boosting lookup table trained on ANSUR II + NHANES.
+ *
+ * When smplMeasurements is provided, uses those values for chest/waist/hip/etc.
+ * instead of the ANSUR II lookup table. The z-score computation and morph
+ * mapping logic remain unchanged — only the input measurements change.
+ *
+ * In MakeHuman-only mode (no SMPL measurements), bodyComposition maps to
+ * existing morph modifiers (athletic → Muscular/WiderShoulders, heavy → Heavier/BiggerStomach).
  */
-export function inputsToMorphs(u: UserInputs): Record<string, number> {
+export function inputsToMorphs(
+  u: UserInputs,
+  smplMeasurements?: ExtractedMeasurements | null,
+): Record<string, number> {
   const g = u.gender;
   const bmi = u.weightKg / Math.max(0.01, (u.heightCm / 100) ** 2);
+  const hasSmpl = smplMeasurements != null;
 
-  // Predict measurements from the lookup table
-  const chest = u.bustCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'chestCm');
-  const waist = u.waistCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'waistCm');
-  const hip = u.hipCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'hipCm');
-  const shoulder = lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'shoulderCm');
-  const neck = lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'neckCm');
-  const bicep = lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'bicepCm');
-  const thigh = lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'thighCm');
-  const calf = lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'calfCm');
-  const inseam = u.inseamCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'inseamCm');
+  // Predict measurements: use SMPL measurements when available, otherwise ANSUR II lookup
+  const chest = hasSmpl
+    ? smplMeasurements.chestCm
+    : (u.bustCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'chestCm'));
+  const waist = hasSmpl
+    ? smplMeasurements.waistCm
+    : (u.waistCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'waistCm'));
+  const hip = hasSmpl
+    ? smplMeasurements.hipCm
+    : (u.hipCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'hipCm'));
+  const shoulder = hasSmpl
+    ? smplMeasurements.shoulderCm
+    : lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'shoulderCm');
+  const neck = hasSmpl
+    ? smplMeasurements.neckCm
+    : lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'neckCm');
+  const bicep = hasSmpl
+    ? smplMeasurements.bicepCm
+    : lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'bicepCm');
+  const thigh = hasSmpl
+    ? smplMeasurements.thighCm
+    : lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'thighCm');
+  const calf = hasSmpl
+    ? smplMeasurements.calfCm
+    : lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'calfCm');
+  const inseam = hasSmpl
+    ? smplMeasurements.inseamCm
+    : (u.inseamCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'inseamCm'));
 
   // Get population stats for Z-scores
   const gStats = popStats[g === 'male' ? 'male' : 'female'] ?? {};
@@ -108,7 +158,7 @@ export function inputsToMorphs(u: UserInputs): Record<string, number> {
   const zToMorph = (z: number, scale: number = 0.5) => clamp01(z * scale);
   const zToMorphNeg = (z: number, scale: number = 0.5) => clamp01(-z * scale);
 
-  return {
+  const morphs: Record<string, number> = {
     Heavier: clamp01(overallZ * 0.35),
     Thinner: clamp01(-overallZ * 0.35),
     Muscular: baseInfluence('Muscular', 1.0),
@@ -138,6 +188,19 @@ export function inputsToMorphs(u: UserInputs): Record<string, number> {
     DoubleChin: clamp01((bmi - 32) / 15),
     InnerThighFat: clamp01((bmi - 28) / 12),
   };
+
+  // In MakeHuman-only mode (no SMPL measurements), apply body composition boosts.
+  // When SMPL is active, body composition is already encoded in the beta vector,
+  // so the SMPL measurements already reflect it — no additional boost needed.
+  if (!hasSmpl) {
+    const composition = u.bodyComposition ?? 'average';
+    const boosts = BODY_COMPOSITION_BOOSTS[composition];
+    for (const [key, boost] of Object.entries(boosts)) {
+      morphs[key] = clamp01((morphs[key] ?? 0) + boost);
+    }
+  }
+
+  return morphs;
 }
 
 export interface EstimatedMeasurements {
@@ -156,11 +219,35 @@ export interface EstimatedMeasurements {
 }
 
 /**
- * Returns estimated measurements using the gradient boosting lookup table.
+ * Returns estimated measurements using the gradient boosting lookup table,
+ * or SMPL-extracted measurements when available.
  */
-export function estimatedMeasurements(u: UserInputs): EstimatedMeasurements {
+export function estimatedMeasurements(
+  u: UserInputs,
+  smplMeasurements?: ExtractedMeasurements | null,
+): EstimatedMeasurements {
   const g = u.gender;
   const bmi = u.weightKg / Math.max(0.01, (u.heightCm / 100) ** 2);
+
+  // When SMPL measurements are available, prefer them over ANSUR II lookup
+  if (smplMeasurements != null) {
+    const waist = smplMeasurements.waistCm;
+    const hip = smplMeasurements.hipCm;
+    return {
+      bustCm: Math.round(smplMeasurements.chestCm),
+      waistCm: Math.round(waist),
+      hipCm: Math.round(hip),
+      highHipCm: Math.round(u.highHipCm ?? (waist * 0.4 + hip * 0.6)),
+      inseamCm: Math.round(smplMeasurements.inseamCm),
+      shoulderCm: Math.round(smplMeasurements.shoulderCm),
+      neckCm: Math.round(smplMeasurements.neckCm),
+      bicepCm: Math.round(smplMeasurements.bicepCm),
+      thighCm: Math.round(smplMeasurements.thighCm),
+      calfCm: Math.round(smplMeasurements.calfCm),
+      wristCm: Math.round(smplMeasurements.wristCm),
+      bmi: Math.round(bmi * 10) / 10,
+    };
+  }
 
   const waist = u.waistCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'waistCm');
   const hip = u.hipCm ?? lookupMeasurement(g, u.heightCm, u.weightKg, u.age, 'hipCm');
