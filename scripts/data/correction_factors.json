@@ -1,0 +1,58 @@
+{
+  "biasCorrections": {
+    "chestCm": {
+      "betaAdjustments": [
+        {
+          "betaIdx": 5,
+          "adjustment": -0.683967
+        },
+        {
+          "betaIdx": 6,
+          "adjustment": -0.683967
+        },
+        {
+          "betaIdx": 8,
+          "adjustment": -0.683967
+        }
+      ]
+    },
+    "waistCm": {
+      "betaAdjustments": [
+        {
+          "betaIdx": 1,
+          "adjustment": -2.849565
+        },
+        {
+          "betaIdx": 3,
+          "adjustment": 2.849565
+        }
+      ]
+    },
+    "hipCm": {
+      "betaAdjustments": [
+        {
+          "betaIdx": 7,
+          "adjustment": -0.472206
+        },
+        {
+          "betaIdx": 9,
+          "adjustment": -0.472206
+        }
+      ]
+    },
+    "inseamCm": {
+      "betaAdjustments": [
+        {
+          "betaIdx": 4,
+          "adjustment": 1.635031
+        }
+      ]
+    }
+  },
+  "scaleCorrections": {
+    "chestCm": 0.895148,
+    "waistCm": 0.902859,
+    "hipCm": 0.963666,
+    "inseamCm": 1.104474
+  }
+}

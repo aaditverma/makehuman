@@ -47,8 +47,8 @@ export function BodyModel() {
   const bodyHeightRange = useRef<{ min: number; max: number }>({ min: 0, max: 1.73 });
   const adjacencyRef = useRef<AdjacencyMap | null>(null);
 
-  // Ground tracking
-  const groundFrameCounter = useRef(0);
+  // Ground tracking — base mesh min Y stored once on setup
+  const baseMeshMinY = useRef(0);
 
   // SMPL refinement state
   const [bodyEngine, setBodyEngine] = useState<BodyEngine | null>(null);
@@ -147,8 +147,6 @@ export function BodyModel() {
 
     // Clear adjacency cache — mesh topology changed (different engine = different vertex/face count)
     adjacencyRef.current = null;
-    // Force immediate ground recomputation on next frame
-    groundFrameCounter.current = 3;
 
     // Heatmap material
     heatmapMaterialRef.current = new THREE.MeshBasicMaterial({ vertexColors: true });
@@ -174,8 +172,9 @@ export function BodyModel() {
       bodyHeightRange.current = { min: minY, max: maxY };
     }
 
-    // Position feet on ground
+    // Position feet on ground — center X/Z, plant feet at Y=0
     const box = new THREE.Box3().setFromObject(clonedScene);
+    baseMeshMinY.current = box.min.y;
     clonedScene.position.set(
       -(box.min.x + box.max.x) / 2,
       -box.min.y,
@@ -331,20 +330,10 @@ export function BodyModel() {
     currentWidthScale.current = damp(currentWidthScale.current, targetWidthScale.current, SMOOTH, dt);
     groupRef.current.scale.set(currentWidthScale.current, currentHeightScale.current, currentWidthScale.current);
 
-    // Keep feet on the ground: morph targets can shift the lowest vertex.
-    // Recompute ground offset periodically so feet stay at Y=0 in world space.
-    groundFrameCounter.current++;
-    if (groundFrameCounter.current >= 3) {
-      groundFrameCounter.current = 0;
-      mesh.geometry.computeBoundingBox();
-      const bb = mesh.geometry.boundingBox;
-      if (bb) {
-        // Set scene offset so the mesh's lowest point sits at local Y=0.
-        // The group's scaleY then scales everything uniformly from Y=0,
-        // keeping feet planted on the ground plane.
-        clonedScene.position.y = -bb.min.y;
-      }
-    }
+    // Ground anchoring: the group scales from origin (0,0,0).
+    // clonedScene.position.y offsets the mesh so feet sit at local Y=0.
+    // When scaleY != 1, that offset gets scaled too, but so do the vertices,
+    // so feet remain at world Y=0. No per-frame correction needed.
 
     for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
       const cur = currentInfluences.current[i] ?? 0;

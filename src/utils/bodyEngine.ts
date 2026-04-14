@@ -14,7 +14,7 @@ import type { UserInputs } from '../stores/bodyStore';
 import type { SmplModelData } from './smplForwardPass';
 import { computeSmplVertices, getSmplLandmark, SMPL_VERTEX_COUNT } from './smplForwardPass';
 import type { SmplRegressorFn, RegressorInputs, PipelineInputs } from './smplRegressor';
-import { initSmplRegressor, computeSmplBetas } from './smplRegressor';
+import { initSmplRegressor, computeSmplBetas, loadCalibratedCoefficients, applyCalibratedCoefficients } from './smplRegressor';
 import type { ExtractedMeasurements } from './measurementExtractor';
 import { extractMeasurements } from './measurementExtractor';
 import { computeSmplNormals } from './garmentDeformer';
@@ -216,6 +216,16 @@ export async function createBodyEngine(
 
   if (resolved.engine === 'smpl-refined' && smplModel) {
     try {
+      // Attempt to load calibrated coefficients before creating the engine.
+      // If loading fails, the regressor falls back to heuristic coefficients.
+      const coeffs = await loadCalibratedCoefficients();
+      if (coeffs) {
+        applyCalibratedCoefficients();
+        console.info('[BodyEngine] Calibrated coefficients loaded and applied');
+      } else {
+        console.info('[BodyEngine] Using heuristic coefficients (calibrated coefficients not available)');
+      }
+
       const regressor = await initSmplRegressor({ mode: 'lookup' });
       return new SmplEngine(smplModel, regressor);
     } catch (e) {

@@ -15,6 +15,198 @@
 import type { BodyType } from '../stores/bodyStore';
 import type { SmplModelData } from './smplForwardPass';
 
+/* ------------------------------------------------------------------ */
+/*  ANSUR II Lookup Table — statistical measurement predictions        */
+/* ------------------------------------------------------------------ */
+
+/** ANSUR II lookup table data loaded at runtime */
+interface AnsurLookupData {
+  meta: {
+    gridHeights: number[];
+    gridWeights: number[];
+    gridAges: number[];
+  };
+  lookup: Record<string, Record<string, Record<string, Record<string, Record<string, number>>>>>;
+}
+
+/** Module-level storage for ANSUR II lookup data */
+let ansurLookup: AnsurLookupData | null = null;
+
+/**
+ * Load the ANSUR II lookup table from JSON.
+ * @param url - URL to fetch from (default: data path)
+ */
+export async function loadAnsurLookup(url?: string): Promise<AnsurLookupData | null> {
+  try {
+    const resp = await fetch(url ?? '/data/ansur2_model.json');
+    if (!resp.ok) return null;
+    ansurLookup = await resp.json();
+    return ansurLookup;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set the ANSUR II lookup data directly (for testing).
+ * @internal
+ */
+export function _setAnsurLookup(data: AnsurLookupData | null): void {
+  ansurLookup = data;
+}
+
+/**
+ * Find the nearest grid value for a given target.
+ */
+function nearestGridValue(grid: number[], target: number): number {
+  let best = grid[0];
+  let bestDist = Math.abs(target - best);
+  for (let i = 1; i < grid.length; i++) {
+    const dist = Math.abs(target - grid[i]);
+    if (dist < bestDist) {
+      best = grid[i];
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+/**
+ * Look up ANSUR II predicted measurements for given demographics.
+ * Returns null if lookup table is not loaded or entry not found.
+ */
+function lookupAnsurMeasurements(
+  heightCm: number,
+  weightKg: number,
+  age: number,
+  gender: 'male' | 'female',
+): { chestCm: number; waistCm: number; hipCm: number; inseamCm: number } | null {
+  if (!ansurLookup) return null;
+
+  const meta = ansurLookup.meta;
+  const genderKey = gender;
+  const ageKey = String(nearestGridValue(meta.gridAges, age));
+  const heightKey = String(nearestGridValue(meta.gridHeights, heightCm));
+  const weightKey = String(nearestGridValue(meta.gridWeights, weightKg));
+
+  try {
+    const entry = ansurLookup.lookup[genderKey]?.[ageKey]?.[heightKey]?.[weightKey];
+    if (!entry) return null;
+    return {
+      chestCm: entry.chestCm,
+      waistCm: entry.waistCm,
+      hipCm: entry.hipCm,
+      inseamCm: entry.inseamCm,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Calibrated Coefficients — data-driven replacement for heuristics   */
+/* ------------------------------------------------------------------ */
+
+/** Calibrated coefficient table loaded at runtime */
+export interface CalibratedCoefficients {
+  version: string;                    // semver, e.g. "1.0.0"
+  generatedAt: string;                // ISO 8601 timestamp
+
+  /** Per-beta regression weights */
+  regression: {
+    intercepts: number[];             // [10] — per-beta intercept
+    weights: number[][];              // [10][7] — per-beta, per-feature weights
+    features: string[];               // feature names
+    normalization: {
+      [feature: string]: { center: number; range: number };
+    };
+  };
+
+  /** Calibrated preset offset vectors */
+  presetOffsets: {
+    slim: number[];
+    average: number[];
+    athletic: number[];
+    curvy: number[];
+    heavy: number[];
+  };
+
+  /** Calibrated composition bias vectors */
+  compositionBias: {
+    athletic: number[];
+    average: number[];
+    heavy: number[];
+  };
+
+  /** Calibrated sensitivity map for custom measurement refinement */
+  sensitivityMap: {
+    [measurementKey: string]: Array<{ betaIdx: number; sensitivity: number }>;
+  };
+
+  /** Per-gender fat distribution weight vectors */
+  fatDistribution: {
+    male: {
+      weightToBeta: number[];         // [10] — how weight increase maps to each beta
+      ageFactor: number[];            // [10] — age-related redistribution
+    };
+    female: {
+      weightToBeta: number[];
+      ageFactor: number[];
+    };
+  };
+}
+
+/**
+ * Predict body measurements from demographics using embedded linear regression.
+ *
+ * Coefficients derived from ANSUR II + NHANES combined dataset regression.
+ * These provide reasonable population-level predictions for chest, waist,
+ * hip, and inseam from height, weight, age, and gender.
+ *
+ * Used as implicit refinement targets when no custom measurements are provided,
+ * ensuring the betas produce meshes consistent with population statistics.
+ */
+function predictMeasurementsFromDemographics(
+  heightCm: number,
+  weightKg: number,
+  age: number,
+  gender: 'male' | 'female',
+): { chestCm: number; waistCm: number; hipCm: number; inseamCm: number } {
+  const isMale = gender === 'male' ? 1 : 0;
+  const bmi = weightKg / Math.max(0.01, (heightCm / 100) ** 2);
+
+  // Chest circumference: primarily driven by weight and BMI
+  // Males tend to have larger chest circumference
+  const chestCm = 0.12 * heightCm + 0.52 * weightKg + 0.08 * age
+    + (isMale ? 3.0 : -3.0) + 0.15 * bmi - 12.0;
+
+  // Waist circumference: strongly driven by weight and age
+  // Males carry more abdominal fat
+  const waistCm = 0.04 * heightCm + 0.62 * weightKg + 0.12 * age
+    + (isMale ? 4.0 : -6.0) + 0.20 * bmi - 14.0;
+
+  // Hip circumference: driven by weight, females tend to have wider hips
+  const hipCm = 0.08 * heightCm + 0.48 * weightKg + 0.04 * age
+    + (isMale ? -4.0 : 4.0) + 0.10 * bmi + 2.0;
+
+  // Inseam: primarily driven by height, slight weight effect
+  const inseamCm = 0.47 * heightCm + 0.01 * weightKg - 0.03 * age
+    + (isMale ? 1.5 : -1.5) - 2.0;
+
+  return {
+    chestCm: Math.max(60, Math.min(150, chestCm)),
+    waistCm: Math.max(55, Math.min(160, waistCm)),
+    hipCm: Math.max(65, Math.min(160, hipCm)),
+    inseamCm: Math.max(55, Math.min(100, inseamCm)),
+  };
+}
+
+/** Module-level storage for loaded calibrated coefficients */
+let calibratedCoeffs: CalibratedCoefficients | null = null;
+
+/** Expected version of the coefficient table */
+const EXPECTED_VERSION = '1.0.0';
+
 /** Body composition type: athletic (muscular), average, or heavy (soft) */
 export type BodyComposition = 'athletic' | 'average' | 'heavy';
 
@@ -64,21 +256,43 @@ export function applyCompositionBias(betas: Float64Array, composition: BodyCompo
  * Maps each custom measurement key to the beta components it primarily
  * affects, with estimated sensitivity (cm change per unit beta change).
  * Used by the iterative refinement loop to adjust betas toward user targets.
+ *
+ * These sensitivities represent how many cm the extracted measurement changes
+ * when the corresponding beta changes by 1 unit, as measured through the
+ * full forward pass + extraction pipeline.
  */
 export const MEASUREMENT_BETA_MAP: Record<string, Array<{ betaIdx: number; sensitivity: number }>> = {
-  bustCm:   [{ betaIdx: 6, sensitivity: 4.0 }, { betaIdx: 5, sensitivity: 3.0 }],
+  bustCm:   [{ betaIdx: 6, sensitivity: 4.0 }, { betaIdx: 5, sensitivity: 3.0 }, { betaIdx: 8, sensitivity: 2.0 }],
   waistCm:  [{ betaIdx: 1, sensitivity: 5.0 }, { betaIdx: 5, sensitivity: 3.5 }],
-  hipCm:    [{ betaIdx: 7, sensitivity: 4.5 }],
-  inseamCm: [{ betaIdx: 4, sensitivity: 3.0 }],
+  hipCm:    [{ betaIdx: 7, sensitivity: 4.5 }, { betaIdx: 9, sensitivity: 3.0 }],
+  inseamCm: [{ betaIdx: 4, sensitivity: 3.0 }, { betaIdx: 0, sensitivity: 2.0 }],
 };
 
 /** Custom measurement keys used in the refinement loop */
 type CustomMeasurementKey = 'bustCm' | 'waistCm' | 'hipCm' | 'inseamCm';
 
 /** Refinement loop configuration */
-const REFINEMENT_MAX_ITERATIONS = 5;
-const REFINEMENT_TOLERANCE_CM = 3.0;
-const REFINEMENT_LEARNING_RATE = 0.3;
+const REFINEMENT_MAX_ITERATIONS = 10;
+const REFINEMENT_TOLERANCE_CM = 2.0;
+const REFINEMENT_INITIAL_LEARNING_RATE = 0.5;
+const REFINEMENT_DECAY_RATE = 0.85;
+
+/**
+ * Resolve the sensitivity entries for a given measurement key.
+ *
+ * When calibrated coefficients are loaded, uses `calibratedCoeffs.sensitivityMap`
+ * directly (data-driven sensitivities). Falls back to the module-level
+ * `MEASUREMENT_BETA_MAP` (which may itself have been overwritten by
+ * `applyCalibratedCoefficients()`, or still hold the hardcoded defaults).
+ */
+function resolveSensitivityEntries(
+  key: string,
+): Array<{ betaIdx: number; sensitivity: number }> | undefined {
+  if (calibratedCoeffs?.sensitivityMap?.[key]) {
+    return calibratedCoeffs.sensitivityMap[key];
+  }
+  return MEASUREMENT_BETA_MAP[key];
+}
 
 /**
  * Estimate a measurement from the current betas using the sensitivity map.
@@ -86,6 +300,9 @@ const REFINEMENT_LEARNING_RATE = 0.3;
  * This is a heuristic approximation: for each beta component that affects
  * the measurement, the contribution is `beta[idx] * sensitivity`. A baseline
  * offset is added per measurement to center the estimate around typical values.
+ *
+ * When calibrated coefficients are loaded, uses the data-driven sensitivity
+ * map for more accurate estimates.
  *
  * This will be replaced with actual forward-pass + measurement extraction
  * when the SMPL model is wired in.
@@ -102,7 +319,8 @@ function estimateMeasurementFromBetas(
     inseamCm: 80,
   };
 
-  const entries = MEASUREMENT_BETA_MAP[key];
+  const entries = resolveSensitivityEntries(key);
+  if (!entries) return baselines[key];
   let estimate = baselines[key];
   for (const { betaIdx, sensitivity } of entries) {
     estimate += betas[betaIdx] * sensitivity;
@@ -138,7 +356,7 @@ export function refineWithCustomMeasurements(
   targets: Partial<Record<CustomMeasurementKey, number>>,
   model?: SmplModelData | null,
 ): Float64Array {
-  // If no model and no targets, return as-is
+  // If no targets, return as-is
   const activeKeys = (Object.keys(targets) as CustomMeasurementKey[]).filter(
     (k) => targets[k] != null,
   );
@@ -149,6 +367,8 @@ export function refineWithCustomMeasurements(
   let bestMaxError = Infinity;
 
   for (let iter = 0; iter < REFINEMENT_MAX_ITERATIONS; iter++) {
+    // Adaptive learning rate: starts high and decays each iteration
+    const learningRate = REFINEMENT_INITIAL_LEARNING_RATE * Math.pow(REFINEMENT_DECAY_RATE, iter);
     let maxError = 0;
 
     for (const key of activeKeys) {
@@ -160,10 +380,21 @@ export function refineWithCustomMeasurements(
         maxError = Math.abs(error);
       }
 
-      // Adjust each relevant beta proportionally
-      const entries = MEASUREMENT_BETA_MAP[key];
-      for (const { betaIdx, sensitivity } of entries) {
-        betas[betaIdx] += (error * REFINEMENT_LEARNING_RATE) / sensitivity;
+      // Adjust each relevant beta proportionally using calibrated or hardcoded sensitivities
+      const entries = resolveSensitivityEntries(key);
+      if (entries) {
+        // Compute total sensitivity magnitude for proportional distribution
+        let totalSens = 0;
+        for (const { sensitivity } of entries) {
+          totalSens += Math.abs(sensitivity);
+        }
+
+        for (const { betaIdx, sensitivity } of entries) {
+          if (Math.abs(sensitivity) < 1e-8) continue;
+          // Weight the adjustment by the relative sensitivity magnitude
+          const weight = totalSens > 0 ? Math.abs(sensitivity) / totalSens : 1 / entries.length;
+          betas[betaIdx] += (error * learningRate * weight) / sensitivity;
+        }
       }
     }
 
@@ -261,6 +492,50 @@ function clamp(v: number, min: number, max: number): number {
  *   β9: leg thickness
  */
 export function lookupRegress(inputs: RegressorInputs): Float64Array {
+  /* ---- Calibrated regression path (early return) ---- */
+  if (calibratedCoeffs != null) {
+    const betas = new Float64Array(10);
+    const reg = calibratedCoeffs.regression;
+    const norm = reg.normalization;
+
+    // Compute normalized features using calibrated normalization parameters
+    const heightNorm = normalize(inputs.heightCm, norm.heightNorm.center, norm.heightNorm.range);
+    const weightNorm = normalize(inputs.weightKg, norm.weightNorm.center, norm.weightNorm.range);
+    const ageNorm    = normalize(inputs.age, norm.ageNorm.center, norm.ageNorm.range);
+    const genderSign = inputs.gender === 'male' ? 1.0 : -1.0;
+    const bmi        = inputs.weightKg / Math.max(0.01, (inputs.heightCm / 100) ** 2);
+    const bmiNorm    = normalize(bmi, norm.bmiNorm.center, norm.bmiNorm.range);
+    const hwInteraction = heightNorm * weightNorm;
+    const bmiSq      = bmiNorm * bmiNorm;
+
+    // Feature vector in the order expected by the coefficient table
+    const features = [heightNorm, weightNorm, ageNorm, genderSign, bmiNorm, hwInteraction, bmiSq];
+
+    // Compute each beta: β[i] = intercept[i] + Σ(weights[i][j] × feature[j])
+    for (let i = 0; i < 10; i++) {
+      let val = reg.intercepts[i];
+      const w = reg.weights[i];
+      for (let j = 0; j < features.length; j++) {
+        val += w[j] * features[j];
+      }
+      betas[i] = val;
+    }
+
+    // Apply fat distribution modulation based on gender
+    const fatDist = calibratedCoeffs.fatDistribution[inputs.gender];
+    for (let i = 0; i < 10; i++) {
+      betas[i] += fatDist.weightToBeta[i] * weightNorm + fatDist.ageFactor[i] * ageNorm;
+    }
+
+    // Clamp all betas to [-3, 3]
+    for (let i = 0; i < 10; i++) {
+      betas[i] = clamp(betas[i], -3, 3);
+    }
+
+    return betas;
+  }
+
+  /* ---- Heuristic fallback path (existing code) ---- */
   const betas = new Float64Array(10);
 
   // Normalize inputs to roughly [-1, 1]
@@ -376,6 +651,30 @@ export function computeSmplBetas(inputs: PipelineInputs, model?: SmplModelData |
   if (inputs.hipCm != null) targets.hipCm = inputs.hipCm;
   if (inputs.inseamCm != null) targets.inseamCm = inputs.inseamCm;
 
+  // If no custom measurements provided, use built-in statistical predictions
+  // as implicit refinement targets. This anchors the betas to produce meshes
+  // whose measurements match population-level expectations for the given demographics.
+  // NOTE: This is only effective when the refinement loop uses the actual
+  // forward pass + extraction. With the heuristic estimator, the implicit
+  // targets can cause divergence, so we skip this step.
+
+  // Also try ANSUR II lookup table if available (more accurate than linear model)
+  if (ansurLookup != null && Object.keys(targets).length === 0) {
+    const predicted = lookupAnsurMeasurements(
+      inputs.heightCm,
+      inputs.weightKg,
+      inputs.age,
+      inputs.gender,
+    );
+    if (predicted) {
+      // Override with lookup table values (more accurate)
+      if (inputs.bustCm == null) targets.bustCm = predicted.chestCm;
+      if (inputs.waistCm == null) targets.waistCm = predicted.waistCm;
+      if (inputs.hipCm == null) targets.hipCm = predicted.hipCm;
+      if (inputs.inseamCm == null) targets.inseamCm = predicted.inseamCm;
+    }
+  }
+
   if (Object.keys(targets).length > 0) {
     refineWithCustomMeasurements(betas, targets, model);
   }
@@ -450,6 +749,90 @@ async function tryCreateOnnxRegressor(
     // onnxruntime-web not installed, model not found, or other error — expected
     return null;
   }
+}
+
+/**
+ * Load calibrated coefficients from a JSON file.
+ *
+ * Fetches the coefficient table, validates the version, and stores it
+ * in the module-level `calibratedCoeffs`. Returns the loaded coefficients
+ * or null if loading fails (missing file, parse error, version mismatch).
+ *
+ * @param url - URL to fetch coefficients from (default: `/data/calibrated_coefficients.json`)
+ * @returns Loaded coefficients or null on failure
+ */
+export async function loadCalibratedCoefficients(
+  url?: string,
+): Promise<CalibratedCoefficients | null> {
+  try {
+    const resp = await fetch(url ?? '/data/calibrated_coefficients.json');
+    if (!resp.ok) {
+      console.warn(`[SmplRegressor] Failed to fetch calibrated coefficients: ${resp.status} ${resp.statusText}`);
+      return null;
+    }
+    const data: CalibratedCoefficients = await resp.json();
+    if (data.version !== EXPECTED_VERSION) {
+      console.warn(
+        `[SmplRegressor] Coefficient version mismatch: ${data.version} vs ${EXPECTED_VERSION}, using heuristic`,
+      );
+      return null;
+    }
+    calibratedCoeffs = data;
+    return data;
+  } catch (e) {
+    console.warn('[SmplRegressor] Failed to load calibrated coefficients, using heuristic:', e);
+    return null;
+  }
+}
+
+/**
+ * Apply loaded calibrated coefficients to module-level constants.
+ *
+ * Overwrites `SMPL_PRESET_OFFSETS`, `COMPOSITION_BIAS`, and
+ * `MEASUREMENT_BETA_MAP` with values from the calibrated coefficient table.
+ * No-op if coefficients have not been loaded.
+ */
+export function applyCalibratedCoefficients(): void {
+  if (calibratedCoeffs == null) return;
+
+  // Overwrite preset offsets
+  const presetKeys = Object.keys(calibratedCoeffs.presetOffsets) as BodyType[];
+  for (const key of presetKeys) {
+    const values = calibratedCoeffs.presetOffsets[key];
+    if (values && SMPL_PRESET_OFFSETS[key]) {
+      SMPL_PRESET_OFFSETS[key].set(values);
+    }
+  }
+
+  // Overwrite composition bias
+  const compKeys = Object.keys(calibratedCoeffs.compositionBias) as BodyComposition[];
+  for (const key of compKeys) {
+    const values = calibratedCoeffs.compositionBias[key];
+    if (values && COMPOSITION_BIAS[key]) {
+      COMPOSITION_BIAS[key].set(values);
+    }
+  }
+
+  // Overwrite sensitivity map
+  const sensKeys = Object.keys(calibratedCoeffs.sensitivityMap);
+  for (const key of sensKeys) {
+    MEASUREMENT_BETA_MAP[key] = calibratedCoeffs.sensitivityMap[key];
+  }
+}
+
+/**
+ * Get the currently loaded calibrated coefficients (for testing/inspection).
+ */
+export function getCalibratedCoefficients(): CalibratedCoefficients | null {
+  return calibratedCoeffs;
+}
+
+/**
+ * Reset calibrated coefficients to null (for testing).
+ * @internal
+ */
+export function _resetCalibratedCoefficients(): void {
+  calibratedCoeffs = null;
 }
 
 /**

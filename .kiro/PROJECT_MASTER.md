@@ -74,6 +74,13 @@ A web-based 3D body avatar that users can customize with their measurements, the
 - `scripts/bake-garments.py` — Blender pipeline: parametric garment patterns → surface projection → morph target baking → GLB export
 - `src/data/ansur2_model.json` — Gradient boosting lookup table (29k subjects, trilinear interpolation)
 - `src/data/bodyProfiles.json` — Body type profiles with measurement offsets and morph response curves
+- `src/data/calibrated_coefficients.json` — Source calibrated coefficients (SHAPY-trained regression weights, preset offsets, composition bias, sensitivity map, fat distribution)
+- `public/data/calibrated_coefficients.json` — Runtime copy served by Vite (must stay in sync with src/data/ version)
+- `scripts/generate-shapy-data.py` — SHAPY A2S data generation across population grid → calibration_dataset.json
+- `scripts/train-beta-coefficients.py` — Polynomial regression trainer → calibrated_coefficients.json
+- `scripts/calibrate-validate.py` — ANSUR II round-trip bias correction → correction_factors.json
+- `scripts/data/calibration_dataset.json` — 7,500+ (measurements → betas) pairs from SHAPY
+- `scripts/data/correction_factors.json` — Bias/scale corrections for measurement extractor
 
 ### ML Model
 - Trained on ANSUR II (6,068 military) + NHANES 2011-2018 (22,468 general population) + bdims (507)
@@ -268,13 +275,16 @@ Phase 2 starts with pre-baked Blender cloth sim (Option A) as a practical founda
 
 ### Pending Fixes
 - **Heatmap boundary jaggedness**: Vertex-based coloring creates some blocky edges at garment boundaries. Could be improved with shader-based approach or higher mesh resolution, but acceptable for Phase 1.
-- **SMPL regressor coefficients are heuristic**: Weight interactions work directionally but magnitudes aren't calibrated against real body data. Need SHAPY integration or trained regressor for accuracy.
+- **SMPL regressor coefficients calibrated but accuracy limited**: Calibrated via SHAPY synthetic data (7,500 pairs). Presets and composition switching now produce dramatic visual differences. Round-trip accuracy limited by demographics-only regression (~8-12cm mean error). Need 8-input regression or SHAPY polynomial extraction for <5cm accuracy.
+- **Calibrated coefficients must be in public/data/**: `public/data/calibrated_coefficients.json` is the runtime copy. `src/data/calibrated_coefficients.json` is the source. Keep both in sync after recalibration.
 - **SMPL A-pose shape keys in T-pose space**: Shape key deformations computed in T-pose, base mesh posed to A-pose. Minor artifacts possible at extreme beta values near shoulders.
 - **SMPL skin texture basic**: Smart UV project, not anatomically mapped. Acceptable for now.
 
 ### Pending Features
-- **SHAPY regressor integration** — use SHAPY to generate synthetic training data (measurements → betas), train lightweight lookup table for accurate weight/measurement interactions
-- **Manual beta calibration** — run forward pass on known body shapes, measure outputs, tune coefficients (do after SHAPY)
+- **SHAPY regressor integration** — ~~use SHAPY to generate synthetic training data~~ DONE (calibration dataset generated). Next: extract SHAPY A2S polynomial coefficients for direct TypeScript replication, or train 8-input regression from existing dataset
+- **8-input regression** — extend regressor to use chest/waist/hip/inseam as inputs (not just height/weight/age/gender). Calibration dataset already has the data. Needs new spec.
+- **Scale to more beta PCs** — SMPL supports 300 PCs, currently using 10. Using 20-50 would capture more body shape variation. Requires regenerating SMPL binary, forward pass, and regressor.
+- **Manual beta calibration** — ~~run forward pass on known body shapes~~ DONE (calibrate-validate.py + correction_factors.json). Corrections need to be merged via SHAPY pipeline re-run.
 - Female model (SMPL female pickle available, swap model weights)
 - Garment shell on SMPL body (model garments with matching shape keys)
 - Age-based body composition changes
@@ -360,6 +370,7 @@ git push origin main
 | 004 | 2026-04-13 | `.kiro/SESSION_HANDOFF_004.md` | Phase 2 implementation: size chart engine, Blender garment pipeline, GarmentShell component, garment shell toggle |
 | 005 | 2026-04-14 | `.kiro/SESSION_HANDOFF_005.md` | SMPL integration: full infrastructure spec, SMPL model generation (165k verts, 10 betas), dual engine toggle, body composition selector |
 | 006 | 2026-04-14 | `.kiro/SESSION_HANDOFF_006.md` | SMPL feature parity: layered beta pipeline, negative morph targets, A-pose via skeleton, smooth subdivision, heatmap/measurements on SMPL, 143 tests |
+| 007 | 2026-04-14 | `.kiro/SESSION_HANDOFF_007.md` | SHAPY calibration tasks 6-13, preset fix (public/data/), measurement extractor scale corrections, refinement loop improvements, 176/183 tests |
 
 ---
 
@@ -451,3 +462,16 @@ git push origin main
 - 143 tests passing (14 new property-based tests)
 - Regressor coefficients are heuristic — need SHAPY integration for accuracy (next spec)
 - Next: SHAPY regressor integration spec + trained lookup table for accurate measurements→betas
+
+### Session 007 — 2026-04-14 (Part 3)
+- Completed SHAPY beta calibration spec tasks 6–13 (runtime wiring, validation, property tests, backward compat, npm calibrate)
+- Fixed critical deployment bug: calibrated coefficients JSON was only in `src/data/`, not `public/data/` where Vite serves it. Presets never loaded at runtime. Copied to `public/data/`.
+- Added empirical scale corrections to measurement extractor (ANSUR II validated: chest 0.895, waist 0.903, hip 0.964, inseam 1.104)
+- Improved refinement loop: 10 iterations, adaptive learning rate (0.5 × 0.85^iter), proportional sensitivity weighting
+- Added ANSUR II lookup table integration to regressor
+- Created validation test suite (100 ANSUR II subjects, round-trip pipeline, summary report)
+- Created Python bias correction script (calibrate-validate.py) + correction_factors.json
+- 176/183 tests pass; 7 accuracy-threshold failures need SHAPY pipeline re-run or 8-input regression
+- Identified fundamental limitation: demographics-only regression (4 inputs → 10 betas) has irreducible ~10-14cm variance
+- Three paths forward identified: 8-input regression, SHAPY polynomial extraction, scale to more beta PCs
+- Next: new spec for enhanced regressor (8-input + more PCs + SHAPY polynomial extraction)

@@ -1,5 +1,5 @@
 /**
- * Property-based tests for smplRegressor.ts — Tasks 3.2, 3.3, 4.5, 4.6, 4.7, 5.3, 5.4, 5.5
+ * Property-based tests for smplRegressor.ts — Tasks 3.2, 3.3, 4.5, 4.6, 4.7, 5.3, 5.4, 5.5, 10.1, 10.2, 10.3
  *
  * Property 3: Regressor output dimensionality
  * Property 6: Age effect on regressor
@@ -9,10 +9,13 @@
  * Property 10: Refinement preserves non-targeted betas
  * Property 11: Body composition produces distinct shapes
  * Property 12: Body composition bias is additive
+ * Round-trip: Chest/Waist/Hip circumference round-trip within 8cm
  *
  * Uses fast-check for property-based testing.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import fc from 'fast-check';
 import {
   initSmplRegressor,
@@ -21,9 +24,15 @@ import {
   COMPOSITION_BIAS,
   refineWithCustomMeasurements,
   MEASUREMENT_BETA_MAP,
+  loadCalibratedCoefficients,
+  applyCalibratedCoefficients,
+  _resetCalibratedCoefficients,
 } from '../smplRegressor';
-import type { RegressorInputs, BodyComposition, PipelineInputs } from '../smplRegressor';
+import type { RegressorInputs, BodyComposition, CalibratedCoefficients } from '../smplRegressor';
 import type { BodyType } from '../../stores/bodyStore';
+import { parseSmplBinary, computeSmplVertices, SMPL_VERTEX_COUNT } from '../smplForwardPass';
+import type { SmplModelData } from '../smplForwardPass';
+import { extractMeasurements } from '../measurementExtractor';
 
 /* ------------------------------------------------------------------ */
 /*  Shared regressor (lookup mode — always available)                  */
@@ -481,3 +490,169 @@ describe('Property 10: Refinement preserves non-targeted betas', () => {
     );
   });
 });
+
+
+/* ------------------------------------------------------------------ */
+/*  Round-Trip Property Tests — Tasks 10.1, 10.2, 10.3                */
+/*                                                                     */
+/*  Full pipeline: random inputs → computeSmplBetas() →                */
+/*  computeSmplVertices() → extractMeasurements() →                    */
+/*  compare extracted measurement with regressor's own estimate.       */
+/*                                                                     */
+/*  The "regressor's own estimate" uses the sensitivity map to         */
+/*  predict what the measurement should be from the betas. The         */
+/*  round-trip error is the difference between that prediction and     */
+/*  the actual mesh-extracted measurement.                             */
+/* ------------------------------------------------------------------ */
+
+describe('Round-trip circumference property tests', () => {
+  let smplModel: SmplModelData;
+  let outputVertices: Float32Array;
+  let coeffsLoaded: boolean;
+
+  /**
+   * Estimate a measurement from betas using the sensitivity map.
+   * Replicates the internal estimateMeasurementFromBetas() logic
+   * from smplRegressor.ts (which is private).
+   */
+  function estimateMeasurementFromBetas(
+    betas: Float64Array,
+    key: 'bustCm' | 'waistCm' | 'hipCm',
+  ): number {
+    const baselines: Record<string, number> = {
+      bustCm: 96,
+      waistCm: 84,
+      hipCm: 98,
+    };
+    const entries = MEASUREMENT_BETA_MAP[key];
+    if (!entries) return baselines[key];
+    let estimate = baselines[key];
+    for (const { betaIdx, sensitivity } of entries) {
+      estimate += betas[betaIdx] * sensitivity;
+    }
+    return estimate;
+  }
+
+  beforeAll(async () => {
+    // Load real SMPL model binary
+    const modelPath = resolve(__dirname, '../../../public/models/smpl/smpl_model.bin');
+    const modelBuffer = readFileSync(modelPath);
+    const arrayBuffer = modelBuffer.buffer.slice(
+      modelBuffer.byteOffset,
+      modelBuffer.byteOffset + modelBuffer.byteLength,
+    );
+    smplModel = parseSmplBinary(arrayBuffer);
+    outputVertices = new Float32Array(SMPL_VERTEX_COUNT * 3);
+
+    // Load calibrated coefficients (mock fetch with real JSON from disk)
+    const coeffPath = resolve(__dirname, '../../data/calibrated_coefficients.json');
+    const coeffJson = JSON.parse(readFileSync(coeffPath, 'utf-8')) as CalibratedCoefficients;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(coeffJson),
+    }));
+    const loaded = await loadCalibratedCoefficients();
+    coeffsLoaded = loaded !== null;
+    if (coeffsLoaded) {
+      applyCalibratedCoefficients();
+    }
+  }, 60_000);
+
+  afterAll(() => {
+    _resetCalibratedCoefficients();
+    vi.restoreAllMocks();
+  });
+
+  /* Generator: random valid inputs per Requirement 6.1 */
+  const roundTripInputsArb = fc.record({
+    heightCm: fc.double({ min: 150, max: 200, noNaN: true, noDefaultInfinity: true }),
+    weightKg: fc.double({ min: 50, max: 130, noNaN: true, noDefaultInfinity: true }),
+    age: fc.integer({ min: 20, max: 60 }),
+    gender: fc.constantFrom('male' as const, 'female' as const),
+  });
+
+  /**
+   * **Validates: Requirements 6.1, 6.2, 6.5**
+   *
+   * For any randomly generated valid inputs (height 150–200, weight 50–130,
+   * age 20–60, male/female), the full round-trip pipeline SHALL produce
+   * an extracted chest circumference within 8cm of the regressor's own
+   * measurement estimate from the same betas.
+   */
+  it('round-trip chest circumference within 8cm', () => {
+    fc.assert(
+      fc.property(roundTripInputsArb, (inputs) => {
+        const betas = computeSmplBetas({
+          ...inputs,
+          bodyType: 'average',
+          bodyComposition: 'average',
+        });
+
+        computeSmplVertices(smplModel, betas, outputVertices);
+        const extracted = extractMeasurements(smplModel, outputVertices);
+
+        const predicted = estimateMeasurementFromBetas(betas, 'bustCm');
+        const error = Math.abs(extracted.chestCm - predicted);
+
+        expect(error).toBeLessThan(8);
+      }),
+      { numRuns: 50 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 6.1, 6.3, 6.5**
+   *
+   * For any randomly generated valid inputs, the full round-trip pipeline
+   * SHALL produce an extracted waist circumference within 8cm of the
+   * regressor's own measurement estimate from the same betas.
+   */
+  it('round-trip waist circumference within 8cm', () => {
+    fc.assert(
+      fc.property(roundTripInputsArb, (inputs) => {
+        const betas = computeSmplBetas({
+          ...inputs,
+          bodyType: 'average',
+          bodyComposition: 'average',
+        });
+
+        computeSmplVertices(smplModel, betas, outputVertices);
+        const extracted = extractMeasurements(smplModel, outputVertices);
+
+        const predicted = estimateMeasurementFromBetas(betas, 'waistCm');
+        const error = Math.abs(extracted.waistCm - predicted);
+
+        expect(error).toBeLessThan(8);
+      }),
+      { numRuns: 50 },
+    );
+  });
+
+  /**
+   * **Validates: Requirements 6.1, 6.4, 6.5**
+   *
+   * For any randomly generated valid inputs, the full round-trip pipeline
+   * SHALL produce an extracted hip circumference within 8cm of the
+   * regressor's own measurement estimate from the same betas.
+   */
+  it('round-trip hip circumference within 8cm', () => {
+    fc.assert(
+      fc.property(roundTripInputsArb, (inputs) => {
+        const betas = computeSmplBetas({
+          ...inputs,
+          bodyType: 'average',
+          bodyComposition: 'average',
+        });
+
+        computeSmplVertices(smplModel, betas, outputVertices);
+        const extracted = extractMeasurements(smplModel, outputVertices);
+
+        const predicted = estimateMeasurementFromBetas(betas, 'hipCm');
+        const error = Math.abs(extracted.hipCm - predicted);
+
+        expect(error).toBeLessThan(8);
+      }),
+      { numRuns: 50 },
+    );
+  });
+}, 120_000);

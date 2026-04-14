@@ -75,6 +75,25 @@ const BAND_HALF_WIDTH = 0.015; // 1.5cm in model units (meters)
 const TORSO_X_LIMIT = 0.18; // meters
 
 /**
+ * Empirical scale corrections for mesh-extracted measurements.
+ *
+ * The SMPL mesh polygon perimeters systematically differ from real-world
+ * tape measurements (ANSUR II ground truth) because:
+ * - Polygon perimeters trace vertex-to-vertex, inflating circumferences
+ * - The horizontal band captures vertices slightly off-plane
+ *
+ * These factors were computed by `scripts/calibrate-validate.py` from
+ * 50+ ANSUR II subjects: scale = ground_truth / mesh_extracted.
+ * Multiply raw mesh measurements by these to get real-world equivalents.
+ */
+const MEASUREMENT_SCALE_CORRECTIONS: Record<string, number> = {
+  chestCm: 0.895,
+  waistCm: 0.903,
+  hipCm: 0.964,
+  inseamCm: 1.104,
+};
+
+/**
  * Get the Y-coordinate of a named landmark vertex, or null if not found.
  */
 function getLandmarkY(
@@ -334,9 +353,9 @@ export function extractMeasurements(
   const wristY = resolveHeight(model, vertices, undefined, 'wrist', minY, bodyHeight);
 
   // Compute circumferences
-  const chestCm = measureCircumference(vertices, chestY, 'torso');
-  const waistCm = measureCircumference(vertices, waistY, 'torso');
-  const hipCm = measureCircumference(vertices, hipY, 'torso');
+  const chestCmRaw = measureCircumference(vertices, chestY, 'torso');
+  const waistCmRaw = measureCircumference(vertices, waistY, 'torso');
+  const hipCmRaw = measureCircumference(vertices, hipY, 'torso');
   const neckCm = measureCircumference(vertices, neckY, 'full');
   const bicepCm = measureCircumference(vertices, bicepY, 'left');
   const thighCm = measureCircumference(vertices, thighY, 'left');
@@ -347,7 +366,14 @@ export function extractMeasurements(
   const shoulderCm = measureShoulder(model, vertices, shoulderY);
 
   // Inseam: vertical distance
-  const inseamCm = measureInseam(model, vertices, hipY, minY, bodyHeight);
+  const inseamCmRaw = measureInseam(model, vertices, hipY, minY, bodyHeight);
+
+  // Apply empirical scale corrections to align mesh measurements with
+  // real-world tape measurements (ANSUR II ground truth)
+  const chestCm = chestCmRaw * (MEASUREMENT_SCALE_CORRECTIONS.chestCm ?? 1);
+  const waistCm = waistCmRaw * (MEASUREMENT_SCALE_CORRECTIONS.waistCm ?? 1);
+  const hipCm = hipCmRaw * (MEASUREMENT_SCALE_CORRECTIONS.hipCm ?? 1);
+  const inseamCm = inseamCmRaw * (MEASUREMENT_SCALE_CORRECTIONS.inseamCm ?? 1);
 
   return {
     chestCm,
