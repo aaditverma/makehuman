@@ -107,20 +107,26 @@ function lookupAnsurMeasurements(
 /*  Calibrated Coefficients — data-driven replacement for heuristics   */
 /* ------------------------------------------------------------------ */
 
+/** Shared structure for a regression model block (4-input or 8-input) */
+export interface RegressionBlock {
+  intercepts: number[];               // [10] — per-beta intercept
+  weights: number[][];                // [10][N] — per-beta, per-feature weights
+  features: string[];                 // feature names in order
+  normalization: {
+    [feature: string]: { center: number; range: number };
+  };
+}
+
 /** Calibrated coefficient table loaded at runtime */
 export interface CalibratedCoefficients {
-  version: string;                    // semver, e.g. "1.0.0"
+  version: string;                    // semver, e.g. "1.0.0" or "2.0.0"
   generatedAt: string;                // ISO 8601 timestamp
 
-  /** Per-beta regression weights */
-  regression: {
-    intercepts: number[];             // [10] — per-beta intercept
-    weights: number[][];              // [10][7] — per-beta, per-feature weights
-    features: string[];               // feature names
-    normalization: {
-      [feature: string]: { center: number; range: number };
-    };
-  };
+  /** Per-beta regression weights (4-input model) */
+  regression: RegressionBlock;
+
+  /** Per-beta regression weights (8-input model, optional for backward compat) */
+  regression8?: RegressionBlock;
 
   /** Calibrated preset offset vectors */
   presetOffsets: {
@@ -204,8 +210,8 @@ function predictMeasurementsFromDemographics(
 /** Module-level storage for loaded calibrated coefficients */
 let calibratedCoeffs: CalibratedCoefficients | null = null;
 
-/** Expected version of the coefficient table */
-const EXPECTED_VERSION = '1.0.0';
+/** Accepted versions of the coefficient table */
+const ACCEPTED_VERSIONS = ['1.0.0', '2.0.0'];
 
 /** Body composition type: athletic (muscular), average, or heavy (soft) */
 export type BodyComposition = 'athletic' | 'average' | 'heavy';
@@ -469,6 +475,169 @@ function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v));
 }
 
+/** Result of imputing missing measurements for the hybrid 8-input path */
+interface ImputedMeasurements {
+  chestCm: number;
+  waistCm: number;
+  hipCm: number;
+  inseamCm: number;
+  chestReal: boolean;
+  waistReal: boolean;
+  hipReal: boolean;
+  inseamReal: boolean;
+}
+
+/**
+ * Impute missing custom measurements for the hybrid 8-input regression path.
+ *
+ * When the user provides 1–3 measurements, the missing ones are filled from
+ * the ANSUR II lookup table (if loaded) or `predictMeasurementsFromDemographics()`.
+ * Returns all 4 measurement values plus boolean flags indicating which are
+ * real (user-provided) vs imputed.
+ */
+function imputeMissingMeasurements(inputs: RegressorInputs): ImputedMeasurements {
+  // Try ANSUR lookup first, fall back to demographic prediction
+  const predicted = lookupAnsurMeasurements(inputs.heightCm, inputs.weightKg, inputs.age, inputs.gender)
+    ?? predictMeasurementsFromDemographics(inputs.heightCm, inputs.weightKg, inputs.age, inputs.gender);
+
+  return {
+    chestCm: inputs.bustCm ?? predicted.chestCm,
+    waistCm: inputs.waistCm ?? predicted.waistCm,
+    hipCm: inputs.hipCm ?? predicted.hipCm,
+    inseamCm: inputs.inseamCm ?? predicted.inseamCm,
+    chestReal: inputs.bustCm != null,
+    waistReal: inputs.waistCm != null,
+    hipReal: inputs.hipCm != null,
+    inseamReal: inputs.inseamCm != null,
+  };
+}
+
+/** Confidence scaling factor applied to imputed (non-user-provided) measurement features */
+const IMPUTED_CONFIDENCE_SCALE = 0.7;
+
+/**
+ * 8-input regression path.
+ *
+ * Computes 11 normalized features from demographics + body measurements,
+ * applies confidence scaling to imputed features, then evaluates the
+ * `regression8` linear model. Fat distribution modulation and clamping
+ * are applied identically to the 4-input path.
+ *
+ * @param inputs - User inputs (demographics + optional measurements)
+ * @param imputed - Resolved measurements with real/imputed flags
+ * @returns Float64Array(10) of beta values clamped to [-3, 3]
+ */
+function regress8Input(inputs: RegressorInputs, imputed: ImputedMeasurements): Float64Array {
+  const betas = new Float64Array(10);
+  const reg = calibratedCoeffs!.regression8!;
+  const norm = reg.normalization;
+
+  // Compute normalized demographic features
+  const heightNorm = normalize(inputs.heightCm, norm.heightNorm.center, norm.heightNorm.range);
+  const weightNorm = normalize(inputs.weightKg, norm.weightNorm.center, norm.weightNorm.range);
+  const ageNorm    = normalize(inputs.age, norm.ageNorm.center, norm.ageNorm.range);
+  const genderSign = inputs.gender === 'male' ? 1.0 : -1.0;
+
+  // Compute normalized measurement features
+  let chestNorm  = normalize(imputed.chestCm, norm.chestNorm.center, norm.chestNorm.range);
+  let waistNorm  = normalize(imputed.waistCm, norm.waistNorm.center, norm.waistNorm.range);
+  let hipNorm    = normalize(imputed.hipCm, norm.hipNorm.center, norm.hipNorm.range);
+  let inseamNorm = normalize(imputed.inseamCm, norm.inseamNorm.center, norm.inseamNorm.range);
+
+  // Apply confidence scaling: imputed features are scaled by 0.7
+  if (!imputed.chestReal)  chestNorm  *= IMPUTED_CONFIDENCE_SCALE;
+  if (!imputed.waistReal)  waistNorm  *= IMPUTED_CONFIDENCE_SCALE;
+  if (!imputed.hipReal)    hipNorm    *= IMPUTED_CONFIDENCE_SCALE;
+  if (!imputed.inseamReal) inseamNorm *= IMPUTED_CONFIDENCE_SCALE;
+
+  // Compute derived interaction features
+  const bmi     = inputs.weightKg / Math.max(0.01, (inputs.heightCm / 100) ** 2);
+  const bmiNorm = normalize(bmi, norm.bmiNorm.center, norm.bmiNorm.range);
+  const whr     = imputed.waistCm / Math.max(0.01, imputed.hipCm);
+  const whrNorm = normalize(whr, norm.whrNorm.center, norm.whrNorm.range);
+  const cwr     = imputed.chestCm / Math.max(0.01, imputed.waistCm);
+  const cwrNorm = normalize(cwr, norm.cwrNorm.center, norm.cwrNorm.range);
+
+  // 11-feature vector in the order expected by the regression8 coefficient table
+  const features = [
+    heightNorm, weightNorm, ageNorm, genderSign,
+    chestNorm, waistNorm, hipNorm, inseamNorm,
+    bmiNorm, whrNorm, cwrNorm,
+  ];
+
+  // Compute each beta: β[i] = intercept8[i] + Σ(weight8[i][j] × feature[j])
+  for (let i = 0; i < 10; i++) {
+    let val = reg.intercepts[i];
+    const w = reg.weights[i];
+    for (let j = 0; j < features.length; j++) {
+      val += w[j] * features[j];
+    }
+    betas[i] = val;
+  }
+
+  // Apply fat distribution modulation based on gender (same as 4-input path)
+  const fatDist = calibratedCoeffs!.fatDistribution[inputs.gender];
+  for (let i = 0; i < 10; i++) {
+    betas[i] += fatDist.weightToBeta[i] * weightNorm + fatDist.ageFactor[i] * ageNorm;
+  }
+
+  // Clamp all betas to [-3, 3]
+  for (let i = 0; i < 10; i++) {
+    betas[i] = clamp(betas[i], -3, 3);
+  }
+
+  return betas;
+}
+
+/**
+ * 4-input calibrated regression path.
+ *
+ * Uses the `regression` (4-input) coefficients from the calibrated
+ * coefficient table. Extracted as a named function for clarity in the
+ * three-way routing logic.
+ */
+function regress4Input(inputs: RegressorInputs): Float64Array {
+  const betas = new Float64Array(10);
+  const reg = calibratedCoeffs!.regression;
+  const norm = reg.normalization;
+
+  // Compute normalized features using calibrated normalization parameters
+  const heightNorm = normalize(inputs.heightCm, norm.heightNorm.center, norm.heightNorm.range);
+  const weightNorm = normalize(inputs.weightKg, norm.weightNorm.center, norm.weightNorm.range);
+  const ageNorm    = normalize(inputs.age, norm.ageNorm.center, norm.ageNorm.range);
+  const genderSign = inputs.gender === 'male' ? 1.0 : -1.0;
+  const bmi        = inputs.weightKg / Math.max(0.01, (inputs.heightCm / 100) ** 2);
+  const bmiNorm    = normalize(bmi, norm.bmiNorm.center, norm.bmiNorm.range);
+  const hwInteraction = heightNorm * weightNorm;
+  const bmiSq      = bmiNorm * bmiNorm;
+
+  // Feature vector in the order expected by the coefficient table
+  const features = [heightNorm, weightNorm, ageNorm, genderSign, bmiNorm, hwInteraction, bmiSq];
+
+  // Compute each beta: β[i] = intercept[i] + Σ(weights[i][j] × feature[j])
+  for (let i = 0; i < 10; i++) {
+    let val = reg.intercepts[i];
+    const w = reg.weights[i];
+    for (let j = 0; j < features.length; j++) {
+      val += w[j] * features[j];
+    }
+    betas[i] = val;
+  }
+
+  // Apply fat distribution modulation based on gender
+  const fatDist = calibratedCoeffs!.fatDistribution[inputs.gender];
+  for (let i = 0; i < 10; i++) {
+    betas[i] += fatDist.weightToBeta[i] * weightNorm + fatDist.ageFactor[i] * ageNorm;
+  }
+
+  // Clamp all betas to [-3, 3]
+  for (let i = 0; i < 10; i++) {
+    betas[i] = clamp(betas[i], -3, 3);
+  }
+
+  return betas;
+}
+
 /**
  * Heuristic-based lookup table regression (pure base regression).
  *
@@ -492,47 +661,23 @@ function clamp(v: number, min: number, max: number): number {
  *   β9: leg thickness
  */
 export function lookupRegress(inputs: RegressorInputs): Float64Array {
-  /* ---- Calibrated regression path (early return) ---- */
+  /* ---- Calibrated regression path ---- */
   if (calibratedCoeffs != null) {
-    const betas = new Float64Array(10);
-    const reg = calibratedCoeffs.regression;
-    const norm = reg.normalization;
+    // Count how many custom measurements are provided
+    const hasChest  = inputs.bustCm != null;
+    const hasWaist  = inputs.waistCm != null;
+    const hasHip    = inputs.hipCm != null;
+    const hasInseam = inputs.inseamCm != null;
+    const customCount = +hasChest + +hasWaist + +hasHip + +hasInseam;
 
-    // Compute normalized features using calibrated normalization parameters
-    const heightNorm = normalize(inputs.heightCm, norm.heightNorm.center, norm.heightNorm.range);
-    const weightNorm = normalize(inputs.weightKg, norm.weightNorm.center, norm.weightNorm.range);
-    const ageNorm    = normalize(inputs.age, norm.ageNorm.center, norm.ageNorm.range);
-    const genderSign = inputs.gender === 'male' ? 1.0 : -1.0;
-    const bmi        = inputs.weightKg / Math.max(0.01, (inputs.heightCm / 100) ** 2);
-    const bmiNorm    = normalize(bmi, norm.bmiNorm.center, norm.bmiNorm.range);
-    const hwInteraction = heightNorm * weightNorm;
-    const bmiSq      = bmiNorm * bmiNorm;
-
-    // Feature vector in the order expected by the coefficient table
-    const features = [heightNorm, weightNorm, ageNorm, genderSign, bmiNorm, hwInteraction, bmiSq];
-
-    // Compute each beta: β[i] = intercept[i] + Σ(weights[i][j] × feature[j])
-    for (let i = 0; i < 10; i++) {
-      let val = reg.intercepts[i];
-      const w = reg.weights[i];
-      for (let j = 0; j < features.length; j++) {
-        val += w[j] * features[j];
-      }
-      betas[i] = val;
+    // Route: 8-input (any measurements) or 4-input (no measurements)
+    if (customCount > 0 && calibratedCoeffs.regression8 != null) {
+      const imputed = imputeMissingMeasurements(inputs);
+      return regress8Input(inputs, imputed);
     }
 
-    // Apply fat distribution modulation based on gender
-    const fatDist = calibratedCoeffs.fatDistribution[inputs.gender];
-    for (let i = 0; i < 10; i++) {
-      betas[i] += fatDist.weightToBeta[i] * weightNorm + fatDist.ageFactor[i] * ageNorm;
-    }
-
-    // Clamp all betas to [-3, 3]
-    for (let i = 0; i < 10; i++) {
-      betas[i] = clamp(betas[i], -3, 3);
-    }
-
-    return betas;
+    // 4-input path (existing calibrated code, unchanged)
+    return regress4Input(inputs);
   }
 
   /* ---- Heuristic fallback path (existing code) ---- */
@@ -622,9 +767,11 @@ export interface PipelineInputs extends RegressorInputs {
  *
  * Layers applied in order:
  *   1. lookupRegress(inputs) → base betas from height/weight/age/gender
+ *      (routes to 8-input, hybrid, or 4-input path based on available measurements)
  *   2. applyPresetOffsets(betas, bodyType) → body type preset deltas
  *   3. applyCompositionBias(betas, composition) → composition shifts
  *   4. refineWithCustomMeasurements(betas, targets, model) → measurement refinement
+ *      (SKIPPED when 8-input model was used with all 4 measurements)
  *   5. Clamp all betas to [-3, 3]
  *
  * This is the public API for beta computation.
@@ -645,38 +792,39 @@ export function computeSmplBetas(inputs: PipelineInputs, model?: SmplModelData |
   }
 
   // Step 4: custom measurement refinement
-  const targets: Partial<Record<'bustCm' | 'waistCm' | 'hipCm' | 'inseamCm', number>> = {};
-  if (inputs.bustCm != null) targets.bustCm = inputs.bustCm;
-  if (inputs.waistCm != null) targets.waistCm = inputs.waistCm;
-  if (inputs.hipCm != null) targets.hipCm = inputs.hipCm;
-  if (inputs.inseamCm != null) targets.inseamCm = inputs.inseamCm;
+  // Skip refinement when 8-input model was used with all 4 measurements —
+  // the betas already incorporate the measurements directly via regression.
+  const used8InputFull = calibratedCoeffs?.regression8 != null
+    && inputs.bustCm != null && inputs.waistCm != null
+    && inputs.hipCm != null && inputs.inseamCm != null;
 
-  // If no custom measurements provided, use built-in statistical predictions
-  // as implicit refinement targets. This anchors the betas to produce meshes
-  // whose measurements match population-level expectations for the given demographics.
-  // NOTE: This is only effective when the refinement loop uses the actual
-  // forward pass + extraction. With the heuristic estimator, the implicit
-  // targets can cause divergence, so we skip this step.
+  if (!used8InputFull) {
+    const targets: Partial<Record<'bustCm' | 'waistCm' | 'hipCm' | 'inseamCm', number>> = {};
+    if (inputs.bustCm != null) targets.bustCm = inputs.bustCm;
+    if (inputs.waistCm != null) targets.waistCm = inputs.waistCm;
+    if (inputs.hipCm != null) targets.hipCm = inputs.hipCm;
+    if (inputs.inseamCm != null) targets.inseamCm = inputs.inseamCm;
 
-  // Also try ANSUR II lookup table if available (more accurate than linear model)
-  if (ansurLookup != null && Object.keys(targets).length === 0) {
-    const predicted = lookupAnsurMeasurements(
-      inputs.heightCm,
-      inputs.weightKg,
-      inputs.age,
-      inputs.gender,
-    );
-    if (predicted) {
-      // Override with lookup table values (more accurate)
-      if (inputs.bustCm == null) targets.bustCm = predicted.chestCm;
-      if (inputs.waistCm == null) targets.waistCm = predicted.waistCm;
-      if (inputs.hipCm == null) targets.hipCm = predicted.hipCm;
-      if (inputs.inseamCm == null) targets.inseamCm = predicted.inseamCm;
+    // If no custom measurements provided, try ANSUR II lookup table
+    // as implicit refinement targets (more accurate than linear model)
+    if (ansurLookup != null && Object.keys(targets).length === 0) {
+      const predicted = lookupAnsurMeasurements(
+        inputs.heightCm,
+        inputs.weightKg,
+        inputs.age,
+        inputs.gender,
+      );
+      if (predicted) {
+        if (inputs.bustCm == null) targets.bustCm = predicted.chestCm;
+        if (inputs.waistCm == null) targets.waistCm = predicted.waistCm;
+        if (inputs.hipCm == null) targets.hipCm = predicted.hipCm;
+        if (inputs.inseamCm == null) targets.inseamCm = predicted.inseamCm;
+      }
     }
-  }
 
-  if (Object.keys(targets).length > 0) {
-    refineWithCustomMeasurements(betas, targets, model);
+    if (Object.keys(targets).length > 0) {
+      refineWithCustomMeasurements(betas, targets, model);
+    }
   }
 
   // Step 5: final clamp to [-3, 3]
@@ -771,12 +919,23 @@ export async function loadCalibratedCoefficients(
       return null;
     }
     const data: CalibratedCoefficients = await resp.json();
-    if (data.version !== EXPECTED_VERSION) {
+    if (!ACCEPTED_VERSIONS.includes(data.version)) {
       console.warn(
-        `[SmplRegressor] Coefficient version mismatch: ${data.version} vs ${EXPECTED_VERSION}, using heuristic`,
+        `[SmplRegressor] Coefficient version mismatch: ${data.version} not in accepted versions [${ACCEPTED_VERSIONS.join(', ')}], using heuristic`,
       );
       return null;
     }
+
+    // v1.0.0: 4-input only, no regression8
+    if (data.version === '1.0.0' && !data.regression8) {
+      console.info('[SmplRegressor] v1.0.0 coefficients loaded (4-input only, 8-input not available)');
+    }
+
+    // v2.0.0: validate regression8 key is present
+    if (data.version === '2.0.0' && !data.regression8) {
+      console.warn('[SmplRegressor] v2.0.0 coefficients missing regression8 key, proceeding with 4-input only');
+    }
+
     calibratedCoeffs = data;
     return data;
   } catch (e) {

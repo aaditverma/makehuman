@@ -47,6 +47,27 @@ FEATURE_NAMES = [
     "bmiNorm", "hwInteraction", "bmiSq",
 ]
 
+# 8-input normalization parameters — must match TypeScript smplRegressor.ts
+NORMALIZATION_8INPUT = {
+    "heightNorm": {"center": 175, "range": 20},
+    "weightNorm": {"center": 80, "range": 30},
+    "ageNorm": {"center": 40, "range": 25},
+    "genderSign": {"center": 0, "range": 1},
+    "chestNorm": {"center": 96, "range": 15},
+    "waistNorm": {"center": 82, "range": 15},
+    "hipNorm": {"center": 98, "range": 15},
+    "inseamNorm": {"center": 80, "range": 10},
+    "bmiNorm": {"center": 25, "range": 8},
+    "whrNorm": {"center": 0.85, "range": 0.15},
+    "cwrNorm": {"center": 1.15, "range": 0.2},
+}
+
+FEATURE_NAMES_8INPUT = [
+    "heightNorm", "weightNorm", "ageNorm", "genderSign",
+    "chestNorm", "waistNorm", "hipNorm", "inseamNorm",
+    "bmiNorm", "whrNorm", "cwrNorm",
+]
+
 # ── Logging ──────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -90,6 +111,46 @@ def compute_features(entry: dict) -> np.ndarray:
 def build_feature_matrix(data: list[dict]) -> tuple[np.ndarray, np.ndarray]:
     """Build feature matrix X and target matrix Y from dataset."""
     X = np.array([compute_features(e) for e in data])
+    Y = np.array([e["betas"] for e in data])
+    return X, Y
+
+
+def compute_features_8input(entry: dict) -> np.ndarray:
+    """Compute the 11 normalized features for the 8-input model from a single entry."""
+    h = entry["heightCm"]
+    w = entry["weightKg"]
+    age = entry["age"]
+    gender = entry["gender"]
+    chest = entry["chestCm"]
+    waist = entry["waistCm"]
+    hip = entry["hipCm"]
+    inseam = entry["inseamCm"]
+
+    heightNorm = (h - 175.0) / 20.0
+    weightNorm = (w - 80.0) / 30.0
+    ageNorm = (age - 40.0) / 25.0
+    genderSign = 1.0 if gender == "male" else -1.0
+    chestNorm = (chest - 96.0) / 15.0
+    waistNorm = (waist - 82.0) / 15.0
+    hipNorm = (hip - 98.0) / 15.0
+    inseamNorm = (inseam - 80.0) / 10.0
+    bmi = w / max(0.01, (h / 100.0) ** 2)
+    bmiNorm = (bmi - 25.0) / 8.0
+    whr = waist / max(0.01, hip)
+    whrNorm = (whr - 0.85) / 0.15
+    cwr = chest / max(0.01, waist)
+    cwrNorm = (cwr - 1.15) / 0.2
+
+    return np.array([
+        heightNorm, weightNorm, ageNorm, genderSign,
+        chestNorm, waistNorm, hipNorm, inseamNorm,
+        bmiNorm, whrNorm, cwrNorm,
+    ])
+
+
+def build_feature_matrix_8input(data: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Build 11-column feature matrix X and target matrix Y for the 8-input model."""
+    X = np.array([compute_features_8input(e) for e in data])
     Y = np.array([e["betas"] for e in data])
     return X, Y
 
@@ -143,6 +204,69 @@ def train_regression(X: np.ndarray, Y: np.ndarray) -> dict:
         "features": FEATURE_NAMES,
         "normalization": NORMALIZATION,
     }
+
+
+def train_regression_8input(X8: np.ndarray, Y: np.ndarray, maes_4input: np.ndarray | None = None) -> tuple[dict, np.ndarray]:
+    """
+    Fit per-beta Ridge regression on the 11-feature 8-input matrix.
+    Cross-validate and assert MAE < 0.15 beta units per component.
+    Log comparison with 4-input model MAE when available.
+
+    Returns tuple of (dict with intercepts [10], weights [10][11], features, normalization)
+    and per-beta MAE array [10].
+    """
+    log.info("Training per-beta 8-input regression (11 features)...")
+
+    intercepts = np.zeros(NUM_BETAS)
+    weights = np.zeros((NUM_BETAS, X8.shape[1]))
+    maes = np.zeros(NUM_BETAS)
+
+    for i in range(NUM_BETAS):
+        y = Y[:, i]
+        model = Ridge(alpha=1.0)
+
+        # 5-fold cross-validation
+        scores = cross_val_score(model, X8, y, cv=5, scoring="neg_mean_absolute_error")
+        mae = -scores.mean()
+        maes[i] = mae
+
+        # Fit on full dataset
+        model.fit(X8, y)
+        intercepts[i] = model.intercept_
+        weights[i] = model.coef_
+
+        improvement = ""
+        if maes_4input is not None:
+            pct = (1.0 - mae / max(maes_4input[i], 1e-8)) * 100.0
+            improvement = f", improvement={pct:.1f}%"
+
+        log.info(f"  β{i}: MAE={mae:.4f}, intercept={model.intercept_:.4f}{improvement}")
+
+    mean_mae = maes.mean()
+    max_mae = maes.max()
+    log.info(f"  Mean MAE across betas: {mean_mae:.4f}")
+    log.info(f"  Max MAE: {max_mae:.4f}")
+
+    assert max_mae < 0.15, (
+        f"Max MAE {max_mae:.4f} exceeds threshold 0.15. "
+        "8-input regression quality insufficient."
+    )
+
+    # Log comparison summary with 4-input model
+    if maes_4input is not None:
+        mean_4 = maes_4input.mean()
+        mean_8 = mean_mae
+        overall_improvement = (1.0 - mean_8 / max(mean_4, 1e-8)) * 100.0
+        log.info(f"  4-input mean MAE: {mean_4:.4f}")
+        log.info(f"  8-input mean MAE: {mean_8:.4f}")
+        log.info(f"  Overall improvement: {overall_improvement:.1f}%")
+
+    return {
+        "intercepts": intercepts.tolist(),
+        "weights": [w.tolist() for w in weights],
+        "features": FEATURE_NAMES_8INPUT,
+        "normalization": NORMALIZATION_8INPUT,
+    }, maes
 
 
 # ═══════════════════════════════════════════════════════════
@@ -516,15 +640,18 @@ def export_coefficients(
     sensitivity_map: dict,
     fat_distribution: dict,
     out_path: str,
+    regression8: dict | None = None,
 ) -> None:
     """
     Write the full CalibratedCoefficients JSON matching the TypeScript interface.
-    Validate file size < 50KB minified.
+    Validate file size < 100KB minified.
     """
     log.info(f"Exporting coefficients to {out_path}")
 
+    version = "2.0.0" if regression8 is not None else "1.0.0"
+
     coefficients = {
-        "version": "1.0.0",
+        "version": version,
         "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
         "regression": regression,
         "presetOffsets": preset_offsets,
@@ -532,6 +659,9 @@ def export_coefficients(
         "sensitivityMap": sensitivity_map,
         "fatDistribution": fat_distribution,
     }
+
+    if regression8 is not None:
+        coefficients["regression8"] = regression8
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
@@ -543,9 +673,9 @@ def export_coefficients(
     size_kb = size_bytes / 1024
     log.info(f"  File size: {size_kb:.1f} KB (minified)")
 
-    assert size_kb < 50, f"File size {size_kb:.1f} KB exceeds 50KB limit"
+    assert size_kb < 100, f"File size {size_kb:.1f} KB exceeds 100KB limit"
 
-    log.info("  ✓ Export complete")
+    log.info(f"  ✓ Export complete (v{version})")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -560,12 +690,34 @@ def main():
     # Load dataset
     data = load_dataset(DATASET_PATH)
 
-    # Build feature matrix
+    # Build feature matrices
     X, Y = build_feature_matrix(data)
-    log.info(f"Feature matrix: {X.shape}, Target matrix: {Y.shape}")
+    log.info(f"4-input feature matrix: {X.shape}, Target matrix: {Y.shape}")
 
-    # 5.1: Train polynomial regression
+    X8, Y8 = build_feature_matrix_8input(data)
+    log.info(f"8-input feature matrix: {X8.shape}, Target matrix: {Y8.shape}")
+
+    # 5.1: Train 4-input polynomial regression
     regression = train_regression(X, Y)
+
+    # Collect 4-input MAEs for comparison
+    maes_4input = np.zeros(NUM_BETAS)
+    for i in range(NUM_BETAS):
+        model = Ridge(alpha=1.0)
+        scores = cross_val_score(model, X, Y[:, i], cv=5, scoring="neg_mean_absolute_error")
+        maes_4input[i] = -scores.mean()
+
+    # Train 8-input regression
+    regression8, maes_8input = train_regression_8input(X8, Y8, maes_4input)
+
+    # Log comparison summary
+    log.info("─" * 40)
+    log.info("Model Comparison Summary:")
+    log.info(f"  4-input mean MAE: {maes_4input.mean():.4f}")
+    log.info(f"  8-input mean MAE: {maes_8input.mean():.4f}")
+    improvement = (1.0 - maes_8input.mean() / max(maes_4input.mean(), 1e-8)) * 100.0
+    log.info(f"  Improvement: {improvement:.1f}%")
+    log.info("─" * 40)
 
     # 5.2: Compute preset offsets
     preset_offsets = compute_preset_offsets(data)
@@ -579,7 +731,7 @@ def main():
     # 5.5: Compute fat distribution
     fat_distribution = compute_fat_distribution(data)
 
-    # 5.6: Export
+    # 5.6: Export (both models)
     export_coefficients(
         regression=regression,
         preset_offsets=preset_offsets,
@@ -587,6 +739,7 @@ def main():
         sensitivity_map=sensitivity_map,
         fat_distribution=fat_distribution,
         out_path=OUT_PATH,
+        regression8=regression8,
     )
 
     log.info("=" * 60)

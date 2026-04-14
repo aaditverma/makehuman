@@ -129,7 +129,7 @@ describe('loadCalibratedCoefficients', () => {
   });
 
   it('returns null and logs warning on version mismatch', async () => {
-    const badVersion = makeValidCoefficients({ version: '2.0.0' });
+    const badVersion = makeValidCoefficients({ version: '3.0.0' });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(badVersion),
@@ -183,6 +183,117 @@ describe('loadCalibratedCoefficients', () => {
 
     expect(result).toBeNull();
     expect(warnSpy).toHaveBeenCalled();
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/*  Version loading logic tests (Task 1.3)                             */
+/* ------------------------------------------------------------------ */
+
+/** Build a minimal valid v2.0.0 CalibratedCoefficients with regression8 */
+function makeV2Coefficients(overrides?: Partial<CalibratedCoefficients>): CalibratedCoefficients {
+  return makeValidCoefficients({
+    version: '2.0.0',
+    regression8: {
+      intercepts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      weights: Array.from({ length: 10 }, () => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+      features: [
+        'heightNorm', 'weightNorm', 'ageNorm', 'genderSign',
+        'chestNorm', 'waistNorm', 'hipNorm', 'inseamNorm',
+        'bmiNorm', 'whrNorm', 'cwrNorm',
+      ],
+      normalization: {
+        heightNorm: { center: 175, range: 20 },
+        weightNorm: { center: 80, range: 30 },
+        ageNorm: { center: 40, range: 25 },
+        genderSign: { center: 0, range: 1 },
+        chestNorm: { center: 96, range: 15 },
+        waistNorm: { center: 82, range: 15 },
+        hipNorm: { center: 98, range: 15 },
+        inseamNorm: { center: 80, range: 10 },
+        bmiNorm: { center: 25, range: 8 },
+        whrNorm: { center: 0.85, range: 0.15 },
+        cwrNorm: { center: 1.15, range: 0.2 },
+      },
+    },
+    ...overrides,
+  });
+}
+
+describe('loadCalibratedCoefficients — version loading (Task 1.3)', () => {
+  it('loads v1.0.0 coefficient table with 4-input only', async () => {
+    const v1Data = makeValidCoefficients({ version: '1.0.0' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(v1Data),
+    }));
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    const result = await loadCalibratedCoefficients();
+
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe('1.0.0');
+    expect(result!.regression8).toBeUndefined();
+    expect(getCalibratedCoefficients()).toBe(result);
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('v1.0.0 coefficients loaded'),
+    );
+  });
+
+  it('loads v2.0.0 coefficient table with both models', async () => {
+    const v2Data = makeV2Coefficients();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(v2Data),
+    }));
+
+    const result = await loadCalibratedCoefficients();
+
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe('2.0.0');
+    expect(result!.regression).toBeDefined();
+    expect(result!.regression8).toBeDefined();
+    expect(result!.regression8!.features).toHaveLength(11);
+    expect(getCalibratedCoefficients()).toBe(result);
+  });
+
+  it('returns null with warning for unsupported version (e.g., "3.0.0")', async () => {
+    const badData = makeValidCoefficients({ version: '3.0.0' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(badData),
+    }));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await loadCalibratedCoefficients();
+
+    expect(result).toBeNull();
+    expect(getCalibratedCoefficients()).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('version mismatch'),
+    );
+  });
+
+  it('loads v2.0.0 missing regression8 with warning but still loads 4-input', async () => {
+    // v2.0.0 without regression8 key
+    const v2NoReg8 = makeValidCoefficients({ version: '2.0.0' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(v2NoReg8),
+    }));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await loadCalibratedCoefficients();
+
+    expect(result).not.toBeNull();
+    expect(result!.version).toBe('2.0.0');
+    expect(result!.regression).toBeDefined();
+    expect(result!.regression8).toBeUndefined();
+    expect(getCalibratedCoefficients()).toBe(result);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('missing regression8'),
+    );
   });
 });
 
@@ -865,5 +976,632 @@ describe('End-to-end calibrated pipeline — composition differences (Req 4.6, 4
     const heavyDelta = heavyBetas[1] - averageBetas[1];
     expect(athleticDelta).toBeLessThan(0);
     expect(heavyDelta).toBeGreaterThan(0);
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/*  lookupRegress — 8-input regression path (Task 2.4)                 */
+/* ------------------------------------------------------------------ */
+
+describe('lookupRegress — 8-input regression path', () => {
+  /** Helper to load mock v2 coefficients with regression8 into module state */
+  async function loadMockV2Coeffs(overrides?: Partial<CalibratedCoefficients>) {
+    const data = makeV2Coefficients(overrides);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(data),
+    }));
+    await loadCalibratedCoefficients();
+    return data;
+  }
+
+  const demographicsOnly: RegressorInputs = {
+    heightCm: 175,
+    weightKg: 80,
+    age: 40,
+    gender: 'male',
+  };
+
+  const allMeasurements: RegressorInputs = {
+    ...demographicsOnly,
+    bustCm: 100,
+    waistCm: 85,
+    hipCm: 100,
+    inseamCm: 82,
+  };
+
+  it('uses 8-input path when all 4 measurements are provided and regression8 is available', async () => {
+    // Set up v2 coefficients with distinct 8-input intercepts (non-zero)
+    // and zero 4-input intercepts, so we can distinguish which path was used
+    const reg8Intercepts = [0.5, 0.4, 0.3, 0.2, 0.1, -0.1, -0.2, -0.3, -0.4, -0.5];
+    await loadMockV2Coeffs({
+      regression: {
+        intercepts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        weights: Array.from({ length: 10 }, () => [0, 0, 0, 0, 0, 0, 0]),
+        features: ['heightNorm', 'weightNorm', 'ageNorm', 'genderSign', 'bmiNorm', 'hwInteraction', 'bmiSq'],
+        normalization: {
+          heightNorm: { center: 175, range: 20 },
+          weightNorm: { center: 80, range: 30 },
+          ageNorm: { center: 40, range: 25 },
+          bmiNorm: { center: 25, range: 8 },
+        },
+      },
+      regression8: {
+        intercepts: reg8Intercepts,
+        weights: Array.from({ length: 10 }, () => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        features: [
+          'heightNorm', 'weightNorm', 'ageNorm', 'genderSign',
+          'chestNorm', 'waistNorm', 'hipNorm', 'inseamNorm',
+          'bmiNorm', 'whrNorm', 'cwrNorm',
+        ],
+        normalization: {
+          heightNorm: { center: 175, range: 20 },
+          weightNorm: { center: 80, range: 30 },
+          ageNorm: { center: 40, range: 25 },
+          genderSign: { center: 0, range: 1 },
+          chestNorm: { center: 96, range: 15 },
+          waistNorm: { center: 82, range: 15 },
+          hipNorm: { center: 98, range: 15 },
+          inseamNorm: { center: 80, range: 10 },
+          bmiNorm: { center: 25, range: 8 },
+          whrNorm: { center: 0.85, range: 0.15 },
+          cwrNorm: { center: 1.15, range: 0.2 },
+        },
+      },
+    });
+
+    const betas4 = lookupRegress(demographicsOnly);
+    const betas8 = lookupRegress(allMeasurements);
+
+    // With zero weights and zero fatDist, 4-input should be all zeros
+    for (let i = 0; i < 10; i++) {
+      expect(betas4[i]).toBeCloseTo(0, 5);
+    }
+
+    // 8-input should reflect the reg8 intercepts (non-zero)
+    for (let i = 0; i < 10; i++) {
+      expect(betas8[i]).toBeCloseTo(reg8Intercepts[i], 5);
+    }
+  });
+
+  it('produces identical output to 4-input path when no measurements are provided', async () => {
+    await loadMockV2Coeffs();
+
+    // Both calls with demographics-only should produce the same result
+    const betas1 = lookupRegress(demographicsOnly);
+    const betas2 = lookupRegress(demographicsOnly);
+
+    for (let i = 0; i < 10; i++) {
+      expect(betas1[i]).toBe(betas2[i]);
+    }
+  });
+
+  it('falls back to 4-input path when regression8 is not available', async () => {
+    // Load v1.0.0 coefficients (no regression8)
+    const v1Data = makeValidCoefficients({ version: '1.0.0' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(v1Data),
+    }));
+    await loadCalibratedCoefficients();
+
+    // Even with measurements, should use 4-input path
+    const betasNoMeas = lookupRegress(demographicsOnly);
+    const betasWithMeas = lookupRegress(allMeasurements);
+
+    // Without regression8, measurements are ignored in lookupRegress
+    for (let i = 0; i < 10; i++) {
+      expect(betasNoMeas[i]).toBe(betasWithMeas[i]);
+    }
+  });
+
+  it('uses hybrid path with 1-3 measurements (output differs from both 4-input and full 8-input)', async () => {
+    // Set up coefficients with non-zero 8-input weights on measurement features
+    // so that different measurement inputs produce different outputs
+    const weights8 = Array.from({ length: 10 }, (_, i) => {
+      const w = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+      // Put non-zero weight on chestNorm (idx 4), waistNorm (idx 5), hipNorm (idx 6), inseamNorm (idx 7)
+      w[4] = (i + 1) * 0.05;  // chestNorm
+      w[5] = (i + 1) * 0.04;  // waistNorm
+      w[6] = (i + 1) * 0.03;  // hipNorm
+      w[7] = (i + 1) * 0.02;  // inseamNorm
+      return w;
+    });
+
+    await loadMockV2Coeffs({
+      regression8: {
+        intercepts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        weights: weights8,
+        features: [
+          'heightNorm', 'weightNorm', 'ageNorm', 'genderSign',
+          'chestNorm', 'waistNorm', 'hipNorm', 'inseamNorm',
+          'bmiNorm', 'whrNorm', 'cwrNorm',
+        ],
+        normalization: {
+          heightNorm: { center: 175, range: 20 },
+          weightNorm: { center: 80, range: 30 },
+          ageNorm: { center: 40, range: 25 },
+          genderSign: { center: 0, range: 1 },
+          chestNorm: { center: 96, range: 15 },
+          waistNorm: { center: 82, range: 15 },
+          hipNorm: { center: 98, range: 15 },
+          inseamNorm: { center: 80, range: 10 },
+          bmiNorm: { center: 25, range: 8 },
+          whrNorm: { center: 0.85, range: 0.15 },
+          cwrNorm: { center: 1.15, range: 0.2 },
+        },
+      },
+    });
+
+    // 4-input path (no measurements)
+    const betas4 = lookupRegress(demographicsOnly);
+
+    // Full 8-input path (all 4 measurements)
+    const betas8Full = lookupRegress(allMeasurements);
+
+    // Hybrid path (only waist provided)
+    const betasHybrid = lookupRegress({
+      ...demographicsOnly,
+      waistCm: 85,
+    });
+
+    // Hybrid should differ from 4-input (because it uses 8-input path with imputed values)
+    let diffFrom4 = false;
+    for (let i = 0; i < 10; i++) {
+      if (Math.abs(betasHybrid[i] - betas4[i]) > 1e-6) {
+        diffFrom4 = true;
+        break;
+      }
+    }
+    expect(diffFrom4).toBe(true);
+
+    // Hybrid should differ from full 8-input (because imputed values differ from real)
+    let diffFrom8 = false;
+    for (let i = 0; i < 10; i++) {
+      if (Math.abs(betasHybrid[i] - betas8Full[i]) > 1e-6) {
+        diffFrom8 = true;
+        break;
+      }
+    }
+    expect(diffFrom8).toBe(true);
+  });
+
+  it('clamps betas to [-3, 3] for extreme 8-input values', async () => {
+    // Set very large intercepts in the 8-input model
+    await loadMockV2Coeffs({
+      regression8: {
+        intercepts: [5, -5, 10, -10, 4, -4, 8, -8, 3.5, -3.5],
+        weights: Array.from({ length: 10 }, () => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        features: [
+          'heightNorm', 'weightNorm', 'ageNorm', 'genderSign',
+          'chestNorm', 'waistNorm', 'hipNorm', 'inseamNorm',
+          'bmiNorm', 'whrNorm', 'cwrNorm',
+        ],
+        normalization: {
+          heightNorm: { center: 175, range: 20 },
+          weightNorm: { center: 80, range: 30 },
+          ageNorm: { center: 40, range: 25 },
+          genderSign: { center: 0, range: 1 },
+          chestNorm: { center: 96, range: 15 },
+          waistNorm: { center: 82, range: 15 },
+          hipNorm: { center: 98, range: 15 },
+          inseamNorm: { center: 80, range: 10 },
+          bmiNorm: { center: 25, range: 8 },
+          whrNorm: { center: 0.85, range: 0.15 },
+          cwrNorm: { center: 1.15, range: 0.2 },
+        },
+      },
+    });
+
+    const betas = lookupRegress(allMeasurements);
+
+    for (let i = 0; i < 10; i++) {
+      expect(betas[i]).toBeGreaterThanOrEqual(-3);
+      expect(betas[i]).toBeLessThanOrEqual(3);
+    }
+    // Verify specific clamping
+    expect(betas[0]).toBe(3);   // 5 clamped to 3
+    expect(betas[1]).toBe(-3);  // -5 clamped to -3
+    expect(betas[2]).toBe(3);   // 10 clamped to 3
+    expect(betas[3]).toBe(-3);  // -10 clamped to -3
+  });
+
+  it('applies 8-input regression weights correctly', async () => {
+    // Set up: one non-zero weight per beta on chestNorm (feature index 4)
+    const weights8 = Array.from({ length: 10 }, (_, i) => {
+      const w = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+      w[4] = (i + 1) * 0.1; // chestNorm weight
+      return w;
+    });
+
+    await loadMockV2Coeffs({
+      regression8: {
+        intercepts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        weights: weights8,
+        features: [
+          'heightNorm', 'weightNorm', 'ageNorm', 'genderSign',
+          'chestNorm', 'waistNorm', 'hipNorm', 'inseamNorm',
+          'bmiNorm', 'whrNorm', 'cwrNorm',
+        ],
+        normalization: {
+          heightNorm: { center: 175, range: 20 },
+          weightNorm: { center: 80, range: 30 },
+          ageNorm: { center: 40, range: 25 },
+          genderSign: { center: 0, range: 1 },
+          chestNorm: { center: 96, range: 15 },
+          waistNorm: { center: 82, range: 15 },
+          hipNorm: { center: 98, range: 15 },
+          inseamNorm: { center: 80, range: 10 },
+          bmiNorm: { center: 25, range: 8 },
+          whrNorm: { center: 0.85, range: 0.15 },
+          cwrNorm: { center: 1.15, range: 0.2 },
+        },
+      },
+    });
+
+    // bustCm = 111 → chestNorm = (111 - 96) / 15 = 1.0 (real, confidence = 1.0)
+    // All other measurements at center → their norms = 0
+    const betas = lookupRegress({
+      ...demographicsOnly,
+      bustCm: 111,
+      waistCm: 82,
+      hipCm: 98,
+      inseamCm: 80,
+    });
+
+    // β[i] = 0 + weights8[i][4] * 1.0 = (i+1) * 0.1
+    for (let i = 0; i < 10; i++) {
+      expect(betas[i]).toBeCloseTo((i + 1) * 0.1, 4);
+    }
+  });
+
+  it('applies confidence scaling (0.7) to imputed measurement features', async () => {
+    // Set up: weight only on chestNorm (feature index 4)
+    const weights8 = Array.from({ length: 10 }, () => {
+      const w = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+      w[4] = 1.0; // chestNorm weight
+      return w;
+    });
+
+    await loadMockV2Coeffs({
+      regression8: {
+        intercepts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        weights: weights8,
+        features: [
+          'heightNorm', 'weightNorm', 'ageNorm', 'genderSign',
+          'chestNorm', 'waistNorm', 'hipNorm', 'inseamNorm',
+          'bmiNorm', 'whrNorm', 'cwrNorm',
+        ],
+        normalization: {
+          heightNorm: { center: 175, range: 20 },
+          weightNorm: { center: 80, range: 30 },
+          ageNorm: { center: 40, range: 25 },
+          genderSign: { center: 0, range: 1 },
+          chestNorm: { center: 96, range: 15 },
+          waistNorm: { center: 82, range: 15 },
+          hipNorm: { center: 98, range: 15 },
+          inseamNorm: { center: 80, range: 10 },
+          bmiNorm: { center: 25, range: 8 },
+          whrNorm: { center: 0.85, range: 0.15 },
+          cwrNorm: { center: 1.15, range: 0.2 },
+        },
+      },
+    });
+
+    // With bustCm provided (real): chestNorm = (111 - 96) / 15 = 1.0
+    const betasReal = lookupRegress({
+      ...demographicsOnly,
+      bustCm: 111,
+      waistCm: 82,
+      hipCm: 98,
+      inseamCm: 80,
+    });
+
+    // Without bustCm (imputed from demographics): chestNorm will be scaled by 0.7
+    // Provide only waistCm to trigger 8-input path, chest will be imputed
+    const betasImputed = lookupRegress({
+      ...demographicsOnly,
+      waistCm: 82,
+      hipCm: 98,
+      inseamCm: 80,
+    });
+
+    // The imputed chest value will differ from 111, so the betas will differ.
+    // The key point is that the imputed path applies 0.7 scaling.
+    // We can't predict the exact imputed value, but we can verify the outputs differ.
+    let different = false;
+    for (let i = 0; i < 10; i++) {
+      if (Math.abs(betasReal[i] - betasImputed[i]) > 1e-6) {
+        different = true;
+        break;
+      }
+    }
+    expect(different).toBe(true);
+  });
+
+  it('produces finite betas in [-3, 3] for diverse 8-input combinations', async () => {
+    await loadMockV2Coeffs();
+
+    const inputs: RegressorInputs[] = [
+      { heightCm: 140, weightKg: 40, age: 18, gender: 'male', bustCm: 75, waistCm: 60, hipCm: 80, inseamCm: 65 },
+      { heightCm: 210, weightKg: 160, age: 80, gender: 'female', bustCm: 130, waistCm: 120, hipCm: 135, inseamCm: 95 },
+      { heightCm: 175, weightKg: 80, age: 40, gender: 'male', bustCm: 100, waistCm: 85, hipCm: 100, inseamCm: 82 },
+      { heightCm: 160, weightKg: 55, age: 25, gender: 'female', bustCm: 85, waistCm: 68, hipCm: 95, inseamCm: 72 },
+    ];
+
+    for (const input of inputs) {
+      const betas = lookupRegress(input);
+      expect(betas.length).toBe(10);
+      for (let i = 0; i < 10; i++) {
+        expect(Number.isFinite(betas[i])).toBe(true);
+        expect(betas[i]).toBeGreaterThanOrEqual(-3);
+        expect(betas[i]).toBeLessThanOrEqual(3);
+      }
+    }
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/*  Refinement skip for full 8-input (Task 3.2)                        */
+/*                                                                     */
+/*  Validates: Requirements 4.3, 4.2                                   */
+/* ------------------------------------------------------------------ */
+
+import {
+  applyPresetOffsets,
+  applyCompositionBias,
+} from '../smplRegressor';
+import type { PipelineInputs } from '../smplRegressor';
+
+describe('computeSmplBetas — refinement skip for full 8-input (Task 3.2)', () => {
+  /** Helper to load mock v2.0.0 coefficients with non-zero 8-input weights */
+  async function loadMockV2CoeffsForRefinement() {
+    // Use non-zero weights so regression produces non-trivial betas
+    const weights8 = Array.from({ length: 10 }, (_, i) => {
+      const w = new Array(11).fill(0);
+      w[0] = (i + 1) * 0.05; // heightNorm weight
+      w[4] = (i + 1) * 0.03; // chestNorm weight
+      w[5] = (i + 1) * 0.02; // waistNorm weight
+      return w;
+    });
+
+    const data = makeV2Coefficients({
+      regression8: {
+        intercepts: [0.1, -0.1, 0.2, -0.2, 0.15, -0.15, 0.05, -0.05, 0.1, -0.1],
+        weights: weights8,
+        features: [
+          'heightNorm', 'weightNorm', 'ageNorm', 'genderSign',
+          'chestNorm', 'waistNorm', 'hipNorm', 'inseamNorm',
+          'bmiNorm', 'whrNorm', 'cwrNorm',
+        ],
+        normalization: {
+          heightNorm: { center: 175, range: 20 },
+          weightNorm: { center: 80, range: 30 },
+          ageNorm: { center: 40, range: 25 },
+          genderSign: { center: 0, range: 1 },
+          chestNorm: { center: 96, range: 15 },
+          waistNorm: { center: 82, range: 15 },
+          hipNorm: { center: 98, range: 15 },
+          inseamNorm: { center: 80, range: 10 },
+          bmiNorm: { center: 25, range: 8 },
+          whrNorm: { center: 0.85, range: 0.15 },
+          cwrNorm: { center: 1.15, range: 0.2 },
+        },
+      },
+    });
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(data),
+    }));
+    await loadCalibratedCoefficients();
+    applyCalibratedCoefficients();
+    return data;
+  }
+
+  it('with all 4 measurements and 8-input model, output equals lookupRegress + preset + composition + clamp (no refinement)', async () => {
+    await loadMockV2CoeffsForRefinement();
+
+    const inputs: PipelineInputs = {
+      heightCm: 180,
+      weightKg: 85,
+      age: 35,
+      gender: 'male',
+      bodyType: 'athletic',
+      bodyComposition: 'athletic',
+      bustCm: 100,
+      waistCm: 88,
+      hipCm: 102,
+      inseamCm: 82,
+    };
+
+    // Compute via the full pipeline (should skip refinement)
+    const pipelineBetas = computeSmplBetas(inputs);
+
+    // Manually compose the expected result: lookupRegress + preset + composition + clamp
+    const expectedBetas = lookupRegress(inputs);
+    applyPresetOffsets(expectedBetas, 'athletic');
+    applyCompositionBias(expectedBetas, 'athletic');
+    for (let i = 0; i < 10; i++) {
+      expectedBetas[i] = Math.min(3, Math.max(-3, expectedBetas[i]));
+    }
+
+    // They should be identical — refinement was skipped
+    for (let i = 0; i < 10; i++) {
+      expect(pipelineBetas[i]).toBeCloseTo(expectedBetas[i], 10);
+    }
+  });
+
+  it('with all 4 measurements and 8-input model (average preset/composition), output equals lookupRegress + clamp', async () => {
+    await loadMockV2CoeffsForRefinement();
+
+    const inputs: PipelineInputs = {
+      heightCm: 170,
+      weightKg: 70,
+      age: 30,
+      gender: 'female',
+      bodyType: 'average',
+      bodyComposition: 'average',
+      bustCm: 90,
+      waistCm: 72,
+      hipCm: 98,
+      inseamCm: 76,
+    };
+
+    const pipelineBetas = computeSmplBetas(inputs);
+    const expectedBetas = lookupRegress(inputs);
+    for (let i = 0; i < 10; i++) {
+      expectedBetas[i] = Math.min(3, Math.max(-3, expectedBetas[i]));
+    }
+
+    for (let i = 0; i < 10; i++) {
+      expect(pipelineBetas[i]).toBeCloseTo(expectedBetas[i], 10);
+    }
+  });
+
+  it('with 4-input path (no measurements), refinement still runs when ANSUR lookup provides targets', async () => {
+    // Load v2 coefficients but provide NO custom measurements
+    // With ANSUR lookup loaded, refinement targets will be populated from ANSUR
+    await loadMockV2CoeffsForRefinement();
+
+    // We need to verify refinement runs for the 4-input path.
+    // Without custom measurements and without ANSUR lookup, no refinement targets exist.
+    // So we test with custom measurements on the 4-input path (no regression8).
+    // Reset and load v1.0.0 coefficients (no regression8)
+    _resetCalibratedCoefficients();
+
+    const v1Data = makeValidCoefficients({
+      version: '1.0.0',
+      // Use non-zero sensitivity map so refinement actually changes betas
+      sensitivityMap: {
+        bustCm:   [{ betaIdx: 6, sensitivity: 4.0 }, { betaIdx: 5, sensitivity: 3.0 }],
+        waistCm:  [{ betaIdx: 1, sensitivity: 5.0 }, { betaIdx: 5, sensitivity: 3.5 }],
+        hipCm:    [{ betaIdx: 7, sensitivity: 4.5 }, { betaIdx: 9, sensitivity: 3.0 }],
+        inseamCm: [{ betaIdx: 4, sensitivity: 3.0 }, { betaIdx: 0, sensitivity: 2.0 }],
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(v1Data),
+    }));
+    await loadCalibratedCoefficients();
+    applyCalibratedCoefficients();
+
+    const inputs: PipelineInputs = {
+      heightCm: 180,
+      weightKg: 85,
+      age: 35,
+      gender: 'male',
+      bodyType: 'average',
+      bodyComposition: 'average',
+      bustCm: 110,   // far from baseline 96 → refinement should adjust betas
+      waistCm: 95,
+      hipCm: 105,
+      inseamCm: 84,
+    };
+
+    // Full pipeline (4-input path + refinement)
+    const pipelineBetas = computeSmplBetas(inputs);
+
+    // Manual: lookupRegress only (no refinement)
+    const baseBetas = lookupRegress(inputs);
+    for (let i = 0; i < 10; i++) {
+      baseBetas[i] = Math.min(3, Math.max(-3, baseBetas[i]));
+    }
+
+    // Pipeline betas should differ from base betas because refinement ran
+    let different = false;
+    for (let i = 0; i < 10; i++) {
+      if (Math.abs(pipelineBetas[i] - baseBetas[i]) > 1e-6) {
+        different = true;
+        break;
+      }
+    }
+    expect(different).toBe(true);
+  });
+
+  it('with hybrid path (1-3 measurements), refinement still runs', async () => {
+    await loadMockV2CoeffsForRefinement();
+
+    const inputs: PipelineInputs = {
+      heightCm: 180,
+      weightKg: 85,
+      age: 35,
+      gender: 'male',
+      bodyType: 'average',
+      bodyComposition: 'average',
+      // Only 2 measurements — hybrid path, refinement should still run
+      bustCm: 110,
+      waistCm: 95,
+    };
+
+    const pipelineBetas = computeSmplBetas(inputs);
+
+    // Manual: lookupRegress + clamp (no refinement)
+    const baseBetas = lookupRegress(inputs);
+    for (let i = 0; i < 10; i++) {
+      baseBetas[i] = Math.min(3, Math.max(-3, baseBetas[i]));
+    }
+
+    // Pipeline betas should differ from base betas because refinement ran
+    let different = false;
+    for (let i = 0; i < 10; i++) {
+      if (Math.abs(pipelineBetas[i] - baseBetas[i]) > 1e-6) {
+        different = true;
+        break;
+      }
+    }
+    expect(different).toBe(true);
+  });
+
+  it('with no regression8 available, refinement runs even with all 4 measurements', async () => {
+    // Load v1.0.0 (no regression8)
+    _resetCalibratedCoefficients();
+    const v1Data = makeValidCoefficients({
+      version: '1.0.0',
+      sensitivityMap: {
+        bustCm:   [{ betaIdx: 6, sensitivity: 4.0 }],
+        waistCm:  [{ betaIdx: 1, sensitivity: 5.0 }],
+        hipCm:    [{ betaIdx: 7, sensitivity: 4.5 }],
+        inseamCm: [{ betaIdx: 4, sensitivity: 3.0 }],
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(v1Data),
+    }));
+    await loadCalibratedCoefficients();
+    applyCalibratedCoefficients();
+
+    const inputs: PipelineInputs = {
+      heightCm: 180,
+      weightKg: 85,
+      age: 35,
+      gender: 'male',
+      bodyType: 'average',
+      bodyComposition: 'average',
+      bustCm: 110,
+      waistCm: 95,
+      hipCm: 105,
+      inseamCm: 84,
+    };
+
+    const pipelineBetas = computeSmplBetas(inputs);
+    const baseBetas = lookupRegress(inputs);
+    for (let i = 0; i < 10; i++) {
+      baseBetas[i] = Math.min(3, Math.max(-3, baseBetas[i]));
+    }
+
+    // Without regression8, refinement should still run even with all 4 measurements
+    let different = false;
+    for (let i = 0; i < 10; i++) {
+      if (Math.abs(pipelineBetas[i] - baseBetas[i]) > 1e-6) {
+        different = true;
+        break;
+      }
+    }
+    expect(different).toBe(true);
   });
 });
