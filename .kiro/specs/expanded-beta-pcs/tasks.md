@@ -62,51 +62,51 @@
 
 ## Task 9: Checkpoint — Buffer Update Rendering
 
-- [ ] 9.1 Verify the SMPL body renders correctly with the buffer update path (visual check)
-- [ ] 9.2 Verify smooth animation when changing inputs (damping works)
-- [ ] 9.3 Verify MakeHuman engine mode still works with morph targets
+- [x] 9.1 Verify the SMPL body renders correctly with the buffer update path (visual check)
+- [x] 9.2 Verify smooth animation when changing inputs (damping works)
+- [x] 9.3 Verify MakeHuman engine mode still works with morph targets
 - [x] 9.4 Run full test suite
 
 ## Task 10: Update Export Script for N Blend Shapes
 
 - [x] 10.1 Add `--num-shapes` CLI argument to `export-smpl-assets.py` (default 10, range 10–50)
-- [ ] 10.2 Replace `EXPECTED_SHAPE_COUNT = 10` with the CLI argument value
-- [ ] 10.3 Modify `validate_smpl_data()` to check `shapedirs.shape[2] >= num_shapes`
-- [ ] 10.4 Modify `export_smpl_model_bin()` to write `shapeCount = num_shapes` in header and export `num_shapes` blend shapes
-- [ ] 10.5 Apply coordinate transform to all N blend shapes (not just first 10)
+- [x] 10.2 Replace `EXPECTED_SHAPE_COUNT = 10` with the CLI argument value
+- [x] 10.3 Modify `validate_smpl_data()` to check `shapedirs.shape[2] >= num_shapes`
+- [x] 10.4 Modify `export_smpl_model_bin()` to write `shapeCount = num_shapes` in header and export `num_shapes` blend shapes
+- [x] 10.5 Apply coordinate transform to all N blend shapes (not just first 10)
 - [x] 10.6 Bump binary version to 2 in the header
-- [ ] 10.7 Add validation: exit with error if `num_shapes` is outside [10, 50] or exceeds pickle's available shape count
+- [x] 10.7 Add validation: exit with error if `num_shapes` is outside [10, 50] or exceeds pickle's available shape count
 
 ## Task 11: Update Blender Script — Add --no-morphs Flag
 
 - [x] 11.1 Add `--no-morphs` CLI flag to `generate-smpl-model.py`
-- [ ] 11.2 When `--no-morphs` is set, skip shape key computation (steps 3 and 4) and export with `export_morph=False`
-- [ ] 11.3 Verify A-pose, subdivision, UV unwrap, texture, and smooth shading still apply with `--no-morphs`
-- [ ] 11.4 Verify existing `--num-shapes` behavior is unchanged when `--no-morphs` is not set
+- [x] 11.2 When `--no-morphs` is set, skip shape key computation (steps 3 and 4) and export with `export_morph=False`
+- [x] 11.3 Verify A-pose, subdivision, UV unwrap, texture, and smooth shading still apply with `--no-morphs`
+- [x] 11.4 Verify existing `--num-shapes` behavior is unchanged when `--no-morphs` is not set
 
 ## Task 12: Create Subdivision Map Generator Script
 
 - [x] 12.1 Create `scripts/generate-subdivision-map.py` that loads SMPL base mesh, applies Catmull-Clark subdivision, and computes barycentric mapping
-- [ ] 12.2 For each subdivided vertex, find the nearest base mesh face and compute barycentric coordinates
-- [ ] 12.3 Export as `smpl_subdiv_map.bin` in the specified binary format (header + per-vertex data)
-- [ ] 12.4 Print summary: vertex counts, file size, max barycentric error
+- [x] 12.2 For each subdivided vertex, find the nearest base mesh face and compute barycentric coordinates
+- [x] 12.3 Export as `smpl_subdiv_map.bin` in the specified binary format (header + per-vertex data)
+- [x] 12.4 Print summary: vertex counts, file size, max barycentric error
 
 ## Task 13: Update Training Pipeline for N Betas
 
 - [x] 13.1 Add `--num-betas` CLI argument to `train-beta-coefficients.py` (default 10)
-- [ ] 13.2 Modify `train_regression()` to train weights for N betas: `weights[N][7]`, `intercepts[N]`
-- [ ] 13.3 Modify `compute_preset_offsets()` and `compute_composition_bias()` to produce N-length vectors
-- [ ] 13.4 Modify `compute_sensitivity_map()` to analyze all N betas
-- [ ] 13.5 Modify `compute_fat_distribution()` to produce N-length vectors
-- [ ] 13.6 Add `numBetas` field to exported `calibrated_coefficients.json`
-- [ ] 13.7 Validate that calibration dataset has at least N betas per entry
+- [x] 13.2 Modify `train_regression()` to train weights for N betas: `weights[N][7]`, `intercepts[N]`
+- [x] 13.3 Modify `compute_preset_offsets()` and `compute_composition_bias()` to produce N-length vectors
+- [x] 13.4 Modify `compute_sensitivity_map()` to analyze all N betas
+- [x] 13.5 Modify `compute_fat_distribution()` to produce N-length vectors
+- [x] 13.6 Add `numBetas` field to exported `calibrated_coefficients.json`
+- [x] 13.7 Validate that calibration dataset has at least N betas per entry
 
 ## Task 14: Update SHAPY Data Generation for N Betas
 
 - [x] 14.1 Add `--num-betas` CLI argument to `generate-shapy-data.py` (default 10)
-- [ ] 14.2 Store full N-length betas in output dataset entries
-- [ ] 14.3 Pad with 0.0 if SHAPY outputs fewer betas than requested, with warning
-- [ ] 14.4 Add `numBetas` field to each dataset entry
+- [x] 14.2 Store full N-length betas in output dataset entries
+- [x] 14.3 Pad with 0.0 if SHAPY outputs fewer betas than requested, with warning
+- [x] 14.4 Add `numBetas` field to each dataset entry
 
 ## Task 15: Checkpoint — Full Pipeline Integration
 

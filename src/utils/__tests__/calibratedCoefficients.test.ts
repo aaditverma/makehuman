@@ -1605,3 +1605,274 @@ describe('computeSmplBetas — refinement skip for full 8-input (Task 3.2)', () 
     expect(different).toBe(true);
   });
 });
+
+
+/* ------------------------------------------------------------------ */
+/*  A2S Integration Tests (Task 2.5)                                   */
+/*                                                                     */
+/*  Tests that A2S path is correctly routed in lookupRegress() and     */
+/*  that refinement is skipped when A2S path is used.                  */
+/*  Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5                   */
+/* ------------------------------------------------------------------ */
+
+import {
+  getLastRegressionPath,
+} from '../smplRegressor';
+import type { RegressionPath } from '../smplRegressor';
+import {
+  loadA2SCoefficients,
+  isA2SAvailable,
+  _resetA2SCoefficients,
+} from '../shapyA2S';
+import type { A2SCoefficients } from '../shapyA2S';
+
+/** Build a minimal valid A2SCoefficients object for testing */
+function makeValidA2SCoeffs(): A2SCoefficients {
+  // 4 inputs, degree 2 → 1 + 4 + 4*5/2 = 15 expanded features
+  return {
+    metadata: {
+      extractedAt: '2026-01-01T00:00:00Z',
+      shapyVersion: 'test-v1',
+      polynomialDegree: 2,
+      inputFeatures: ['height', 'chest', 'waist', 'hips'],
+      numInputFeatures: 4,
+      numExpandedFeatures: 15,
+      numBetas: 10,
+    },
+    normalization: {
+      inputMean: [170.0, 95.0, 80.0, 100.0],
+      inputStd: [10.0, 12.0, 12.0, 10.0],
+    },
+    weights: Array.from({ length: 10 }, (_, i) => {
+      const w = Array.from({ length: 15 }, () => 0);
+      w[0] = (i + 1) * 0.05; // small weight on bias feature
+      return w;
+    }),
+    bias: Array.from({ length: 10 }, (_, i) => i * 0.01),
+    polynomialOrder: [
+      '1', 'x0', 'x1', 'x2', 'x3',
+      'x0^2', 'x0*x1', 'x0*x2', 'x0*x3',
+      'x1^2', 'x1*x2', 'x1*x3',
+      'x2^2', 'x2*x3',
+      'x3^2',
+    ],
+  };
+}
+
+/** Helper to load mock A2S coefficients */
+async function loadMockA2SCoeffs(): Promise<void> {
+  const data = makeValidA2SCoeffs();
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve(data),
+  }));
+  await loadA2SCoefficients();
+}
+
+describe('A2S integration — lookupRegress routing (Task 2.5)', () => {
+  afterEach(() => {
+    _resetA2SCoefficients();
+    _resetCalibratedCoefficients();
+    vi.restoreAllMocks();
+  });
+
+  it('uses A2S path when A2S loaded and all required inputs provided', async () => {
+    await loadMockA2SCoeffs();
+    expect(isA2SAvailable()).toBe(true);
+
+    const inputs: RegressorInputs = {
+      heightCm: 175,
+      weightKg: 80,
+      age: 30,
+      gender: 'male',
+      bustCm: 100,
+      waistCm: 85,
+      hipCm: 100,
+    };
+
+    const betas = lookupRegress(inputs);
+    expect(betas).toBeInstanceOf(Float64Array);
+    expect(betas.length).toBe(10);
+    expect(getLastRegressionPath()).toBe('a2s');
+  });
+
+  it('falls back to heuristic when A2S loaded but missing bustCm', async () => {
+    await loadMockA2SCoeffs();
+
+    const inputs: RegressorInputs = {
+      heightCm: 175,
+      weightKg: 80,
+      age: 30,
+      gender: 'male',
+      waistCm: 85,
+      hipCm: 100,
+    };
+
+    lookupRegress(inputs);
+    expect(getLastRegressionPath()).toBe('heuristic');
+  });
+
+  it('falls back to heuristic when A2S not loaded', () => {
+    _resetA2SCoefficients();
+    _resetCalibratedCoefficients();
+
+    const inputs: RegressorInputs = {
+      heightCm: 175,
+      weightKg: 80,
+      age: 30,
+      gender: 'male',
+      bustCm: 100,
+      waistCm: 85,
+      hipCm: 100,
+    };
+
+    lookupRegress(inputs);
+    expect(getLastRegressionPath()).toBe('heuristic');
+  });
+
+  it('falls back to calibrated 4-input when A2S loaded but no measurements', async () => {
+    // Load calibrated coefficients first
+    const calibData = makeValidCoefficients();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(calibData),
+    }));
+    await loadCalibratedCoefficients();
+
+    // Now load A2S
+    const a2sData = makeValidA2SCoeffs();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(a2sData),
+    }));
+    await loadA2SCoefficients();
+
+    const inputs: RegressorInputs = {
+      heightCm: 175,
+      weightKg: 80,
+      age: 30,
+      gender: 'male',
+    };
+
+    lookupRegress(inputs);
+    expect(getLastRegressionPath()).toBe('4-input');
+  });
+
+  it('getLastRegressionPath returns correct path for each scenario', async () => {
+    // Scenario 1: heuristic (no coefficients)
+    _resetA2SCoefficients();
+    _resetCalibratedCoefficients();
+    lookupRegress({ heightCm: 175, weightKg: 80, age: 30, gender: 'male' });
+    expect(getLastRegressionPath()).toBe('heuristic');
+
+    // Scenario 2: A2S path
+    const a2sData = makeValidA2SCoeffs();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(a2sData),
+    }));
+    await loadA2SCoefficients();
+
+    lookupRegress({ heightCm: 175, weightKg: 80, age: 30, gender: 'male', bustCm: 100, waistCm: 85, hipCm: 100 });
+    expect(getLastRegressionPath()).toBe('a2s');
+  });
+});
+
+describe('A2S integration — refinement skip (Task 2.5)', () => {
+  afterEach(() => {
+    _resetA2SCoefficients();
+    _resetCalibratedCoefficients();
+    vi.restoreAllMocks();
+  });
+
+  it('skips refinement when A2S path is used', async () => {
+    await loadMockA2SCoeffs();
+
+    const inputs = {
+      heightCm: 175,
+      weightKg: 80,
+      age: 30,
+      gender: 'male' as const,
+      bodyType: 'average' as const,
+      bodyComposition: 'average' as const,
+      bustCm: 100,
+      waistCm: 85,
+      hipCm: 100,
+    };
+
+    // With A2S, computeSmplBetas should equal lookupRegress + clamp (no refinement)
+    const pipelineBetas = computeSmplBetas(inputs);
+    const baseBetas = lookupRegress(inputs);
+
+    // Clamp base betas
+    for (let i = 0; i < baseBetas.length; i++) {
+      baseBetas[i] = Math.min(3, Math.max(-3, baseBetas[i]));
+    }
+
+    for (let i = 0; i < 10; i++) {
+      expect(pipelineBetas[i]).toBeCloseTo(baseBetas[i], 10);
+    }
+  });
+
+  it('preset offsets and composition bias are still applied after A2S base regression', async () => {
+    await loadMockA2SCoeffs();
+
+    const baseInputs = {
+      heightCm: 175,
+      weightKg: 80,
+      age: 30,
+      gender: 'male' as const,
+      bustCm: 100,
+      waistCm: 85,
+      hipCm: 100,
+    };
+
+    const averageBetas = computeSmplBetas({
+      ...baseInputs,
+      bodyType: 'average',
+      bodyComposition: 'average',
+    });
+
+    const athleticBetas = computeSmplBetas({
+      ...baseInputs,
+      bodyType: 'athletic',
+      bodyComposition: 'athletic',
+    });
+
+    // Should differ because preset offsets and composition bias are applied
+    let different = false;
+    for (let i = 0; i < 10; i++) {
+      if (Math.abs(averageBetas[i] - athleticBetas[i]) > 0.001) {
+        different = true;
+        break;
+      }
+    }
+    expect(different).toBe(true);
+  });
+
+  it('existing behavior unchanged when A2S not loaded', () => {
+    _resetA2SCoefficients();
+    _resetCalibratedCoefficients();
+
+    const inputs = {
+      heightCm: 175,
+      weightKg: 80,
+      age: 30,
+      gender: 'male' as const,
+      bodyType: 'average' as const,
+      bodyComposition: 'average' as const,
+    };
+
+    // Should use heuristic path and produce non-zero betas
+    const betas = computeSmplBetas(inputs);
+    expect(betas).toBeInstanceOf(Float64Array);
+    expect(betas.length).toBe(10);
+
+    let hasNonZero = false;
+    for (let i = 0; i < 10; i++) {
+      if (betas[i] !== 0) { hasNonZero = true; break; }
+    }
+    expect(hasNonZero).toBe(true);
+    expect(getLastRegressionPath()).toBe('heuristic');
+  });
+});

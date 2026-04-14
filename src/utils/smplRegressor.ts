@@ -14,6 +14,8 @@
 
 import type { BodyType } from '../stores/bodyStore';
 import type { SmplModelData } from './smplForwardPass';
+import { isA2SAvailable, hasAllA2SInputs, computeA2SBetas } from './shapyA2S';
+import type { A2SInputs } from './shapyA2S';
 
 /* ------------------------------------------------------------------ */
 /*  Active Shape Count — configurable N for the loaded model           */
@@ -30,6 +32,21 @@ export function setActiveShapeCount(n: number): void {
 /** Get the active shape count */
 export function getActiveShapeCount(): number {
   return activeShapeCount;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Regression Path Tracking                                           */
+/* ------------------------------------------------------------------ */
+
+/** Which regression path was used in the last lookupRegress() call */
+export type RegressionPath = 'a2s' | '8-input' | '8-input-hybrid' | '4-input' | 'heuristic';
+
+/** Module-level: tracks which path was used in the last lookupRegress() call */
+let lastRegressionPath: RegressionPath = 'heuristic';
+
+/** Get the regression path used in the last lookupRegress() call */
+export function getLastRegressionPath(): RegressionPath {
+  return lastRegressionPath;
 }
 
 /* ------------------------------------------------------------------ */
@@ -695,6 +712,24 @@ function regress4Input(inputs: RegressorInputs): Float64Array {
 export function lookupRegress(inputs: RegressorInputs): Float64Array {
   const N = activeShapeCount;
 
+  /* ---- A2S polynomial regression path (highest accuracy) ---- */
+  if (isA2SAvailable() && hasAllA2SInputs(inputs)) {
+    const a2sInputs: A2SInputs = {
+      heightCm: inputs.heightCm,
+      chestCm: inputs.bustCm!,   // bustCm maps to chestCm in A2S
+      waistCm: inputs.waistCm!,
+      hipCm: inputs.hipCm!,
+    };
+    const baseBetas = computeA2SBetas(a2sInputs);
+    lastRegressionPath = 'a2s';
+
+    // Extend to N (copies first 10, rest are 0.0)
+    if (N === baseBetas.length) return baseBetas;
+    const extended = new Float64Array(N);
+    extended.set(baseBetas.subarray(0, Math.min(baseBetas.length, N)));
+    return extended;
+  }
+
   /* ---- Calibrated regression path ---- */
   if (calibratedCoeffs != null) {
     // Count how many custom measurements are provided
@@ -709,9 +744,11 @@ export function lookupRegress(inputs: RegressorInputs): Float64Array {
     if (customCount > 0 && calibratedCoeffs.regression8 != null) {
       const imputed = imputeMissingMeasurements(inputs);
       baseBetas = regress8Input(inputs, imputed);
+      lastRegressionPath = customCount === 4 ? '8-input' : '8-input-hybrid';
     } else {
       // 4-input path (existing calibrated code, unchanged)
       baseBetas = regress4Input(inputs);
+      lastRegressionPath = '4-input';
     }
 
     // Extend to N (copies first 10, rest are 0.0)
@@ -722,6 +759,7 @@ export function lookupRegress(inputs: RegressorInputs): Float64Array {
   }
 
   /* ---- Heuristic fallback path (existing code) ---- */
+  lastRegressionPath = 'heuristic';
   const betas = new Float64Array(10);
 
   // Normalize inputs to roughly [-1, 1]
@@ -840,13 +878,15 @@ export function computeSmplBetas(inputs: PipelineInputs, model?: SmplModelData |
   }
 
   // Step 4: custom measurement refinement
-  // Skip refinement when 8-input model was used with all 4 measurements —
-  // the betas already incorporate the measurements directly via regression.
+  // Skip refinement when A2S path was used — the betas already incorporate
+  // the measurements directly via SHAPY's polynomial regression.
+  // Also skip when 8-input model was used with all 4 measurements.
+  const usedA2S = lastRegressionPath === 'a2s';
   const used8InputFull = calibratedCoeffs?.regression8 != null
     && inputs.bustCm != null && inputs.waistCm != null
     && inputs.hipCm != null && inputs.inseamCm != null;
 
-  if (!used8InputFull) {
+  if (!usedA2S && !used8InputFull) {
     const targets: Partial<Record<'bustCm' | 'waistCm' | 'hipCm' | 'inseamCm', number>> = {};
     if (inputs.bustCm != null) targets.bustCm = inputs.bustCm;
     if (inputs.waistCm != null) targets.waistCm = inputs.waistCm;

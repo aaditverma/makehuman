@@ -15,6 +15,7 @@ import type { SmplModelData } from './smplForwardPass';
 import { computeSmplVertices, getSmplLandmark, SMPL_VERTEX_COUNT } from './smplForwardPass';
 import type { SmplRegressorFn, RegressorInputs, PipelineInputs } from './smplRegressor';
 import { initSmplRegressor, computeSmplBetas, loadCalibratedCoefficients, applyCalibratedCoefficients, setActiveShapeCount } from './smplRegressor';
+import { loadA2SCoefficients } from './shapyA2S';
 import type { ExtractedMeasurements } from './measurementExtractor';
 import { extractMeasurements } from './measurementExtractor';
 import { computeSmplNormals } from './garmentDeformer';
@@ -227,6 +228,14 @@ export async function createBodyEngine(
         console.info('[BodyEngine] Calibrated coefficients loaded and applied');
       } else {
         console.info('[BodyEngine] Using heuristic coefficients (calibrated coefficients not available)');
+      }
+
+      // Load A2S coefficients (independent, optional — failure does not block engine startup)
+      const a2s = await loadA2SCoefficients();
+      if (a2s) {
+        console.info('[BodyEngine] A2S coefficients loaded');
+      } else {
+        console.info('[BodyEngine] A2S coefficients not available (optional)');
       }
 
       const regressor = await initSmplRegressor({ mode: 'lookup' });

@@ -1248,3 +1248,169 @@ describe('Property 10: Preset/composition extension preserves first 10 values', 
     );
   });
 });
+
+
+/* ------------------------------------------------------------------ */
+/*  Task 10.1 [PBT]: A2S Refinement Skip                              */
+/* ------------------------------------------------------------------ */
+
+import {
+  loadA2SCoefficients as loadA2S,
+  isA2SAvailable as a2sAvailable,
+  computeA2SBetas,
+  _resetA2SCoefficients as resetA2S,
+} from '../shapyA2S';
+import type { A2SCoefficients, A2SInputs } from '../shapyA2S';
+
+describe('Property 9 (design): A2S refinement skip', () => {
+  /**
+   * **Validates: Requirements 5.4**
+   *
+   * When the A2S path is used with all required measurements,
+   * `computeSmplBetas()` output equals manually composed
+   * `computeA2SBetas()` + preset offsets + composition bias + clamp
+   * (no refinement step).
+   */
+
+  beforeAll(async () => {
+    // Load real A2S coefficients
+    const a2sPath = resolve(__dirname, '../../data/shapy_a2s_coefficients.json');
+    const a2sJson: A2SCoefficients = JSON.parse(readFileSync(a2sPath, 'utf-8'));
+
+    // Load calibrated coefficients
+    const coeffPath = resolve(__dirname, '../../data/calibrated_coefficients.json');
+    const coeffJson = JSON.parse(readFileSync(coeffPath, 'utf-8')) as CalibratedCoefficients;
+
+    // Mock fetch to return both (A2S first, then calibrated)
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(coeffJson),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(a2sJson),
+      });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await loadCalibratedCoefficients();
+    applyCalibratedCoefficients();
+    await loadA2S();
+    expect(a2sAvailable()).toBe(true);
+  }, 30_000);
+
+  afterAll(() => {
+    resetA2S();
+    _resetCalibratedCoefficients();
+    vi.restoreAllMocks();
+  });
+
+  it('computeSmplBetas equals manual A2S + preset + composition + clamp', () => {
+    const a2sFullInputArb = fc.record({
+      heightCm: fc.double({ min: 160, max: 190, noNaN: true, noDefaultInfinity: true }),
+      weightKg: fc.double({ min: 55, max: 100, noNaN: true, noDefaultInfinity: true }),
+      age: fc.integer({ min: 25, max: 55 }),
+      gender: fc.constantFrom('male' as const, 'female' as const),
+      bustCm: fc.double({ min: 80, max: 120, noNaN: true, noDefaultInfinity: true }),
+      waistCm: fc.double({ min: 65, max: 110, noNaN: true, noDefaultInfinity: true }),
+      hipCm: fc.double({ min: 85, max: 125, noNaN: true, noDefaultInfinity: true }),
+    });
+
+    fc.assert(
+      fc.property(a2sFullInputArb, (inputs) => {
+        // Full pipeline via computeSmplBetas (average preset/composition to simplify)
+        const pipelineBetas = computeSmplBetas({
+          ...inputs,
+          bodyType: 'average',
+          bodyComposition: 'average',
+        });
+
+        // Manual composition: computeA2SBetas + clamp (no preset/composition for average)
+        const a2sInputs: A2SInputs = {
+          heightCm: inputs.heightCm,
+          chestCm: inputs.bustCm,
+          waistCm: inputs.waistCm,
+          hipCm: inputs.hipCm,
+        };
+        const manualBetas = computeA2SBetas(a2sInputs);
+        for (let i = 0; i < 10; i++) {
+          manualBetas[i] = Math.min(3, Math.max(-3, manualBetas[i]));
+        }
+
+        for (let i = 0; i < 10; i++) {
+          expect(pipelineBetas[i]).toBeCloseTo(manualBetas[i], 10);
+        }
+      }),
+      { numRuns: 50 },
+    );
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/*  Task 10.2 [PBT]: Backward Compatibility — 4-Input Path Identity    */
+/* ------------------------------------------------------------------ */
+
+describe('Property 10 (design): A2S backward compatibility — 4-input path identity', () => {
+  /**
+   * **Validates: Requirements 10.1**
+   *
+   * For all valid demographics-only inputs (no custom measurements),
+   * `lookupRegress()` produces identical output whether or not A2S
+   * coefficients are loaded. The A2S extension does not alter the
+   * demographics-only path.
+   */
+
+  it('demographics-only output identical with and without A2S loaded', async () => {
+    // First, compute betas WITHOUT A2S loaded
+    resetA2S();
+    _resetCalibratedCoefficients();
+
+    // Load calibrated coefficients only
+    const coeffPath = resolve(__dirname, '../../data/calibrated_coefficients.json');
+    const coeffJson = JSON.parse(readFileSync(coeffPath, 'utf-8')) as CalibratedCoefficients;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(coeffJson),
+    }));
+    await loadCalibratedCoefficients();
+    applyCalibratedCoefficients();
+
+    const demographicsArb = fc.record({
+      heightCm: fc.double({ min: 140, max: 210, noNaN: true, noDefaultInfinity: true }),
+      weightKg: fc.double({ min: 40, max: 160, noNaN: true, noDefaultInfinity: true }),
+      age: fc.integer({ min: 18, max: 80 }),
+      gender: fc.constantFrom('male' as const, 'female' as const),
+    });
+
+    // Collect results without A2S
+    const withoutA2S: Float64Array[] = [];
+    const testInputs = fc.sample(demographicsArb, 100);
+    for (const inputs of testInputs) {
+      withoutA2S.push(new Float64Array(lookupRegress(inputs)));
+    }
+
+    // Now load A2S coefficients
+    const a2sPath = resolve(__dirname, '../../data/shapy_a2s_coefficients.json');
+    const a2sJson: A2SCoefficients = JSON.parse(readFileSync(a2sPath, 'utf-8'));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(a2sJson),
+    }));
+    await loadA2S();
+    expect(a2sAvailable()).toBe(true);
+
+    // Compute with A2S loaded (but no custom measurements → should use same path)
+    for (let idx = 0; idx < testInputs.length; idx++) {
+      const betasWithA2S = lookupRegress(testInputs[idx]);
+      for (let i = 0; i < 10; i++) {
+        expect(betasWithA2S[i]).toBe(withoutA2S[idx][i]);
+      }
+    }
+
+    // Cleanup
+    resetA2S();
+    _resetCalibratedCoefficients();
+    vi.restoreAllMocks();
+  });
+});
