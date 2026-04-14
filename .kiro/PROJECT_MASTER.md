@@ -81,6 +81,13 @@ A web-based 3D body avatar that users can customize with their measurements, the
 - `scripts/calibrate-validate.py` — ANSUR II round-trip bias correction → correction_factors.json
 - `scripts/data/calibration_dataset.json` — 7,500+ (measurements → betas) pairs from SHAPY
 - `scripts/data/correction_factors.json` — Bias/scale corrections for measurement extractor
+- `src/utils/shapyA2S.ts` — SHAPY A2S polynomial regression in TypeScript: coefficient loading, polynomial feature expansion, beta computation
+- `src/utils/subdivisionMapper.ts` — Barycentric subdivision mapping: loads precomputed map, interpolates base mesh vertices to subdivided mesh
+- `src/data/shapy_a2s_coefficients.json` — Source A2S coefficient artifact (synthetic, replace with real SHAPY extraction)
+- `public/data/shapy_a2s_coefficients.json` — Runtime copy of A2S coefficients
+- `scripts/extract-shapy-a2s.py` — Extracts SHAPY A2S polynomial coefficients from PyTorch checkpoint (or generates synthetic)
+- `scripts/generate-subdivision-map.py` — Blender script: generates barycentric subdivision mapping binary
+- `scripts/data/a2s_validation_pairs.json` — 120 (inputs → betas) validation pairs for A2S TypeScript vs Python comparison
 
 ### ML Model
 - Trained on ANSUR II (6,068 military) + NHANES 2011-2018 (22,468 general population) + bdims (507)
@@ -281,9 +288,10 @@ Phase 2 starts with pre-baked Blender cloth sim (Option A) as a practical founda
 - **SMPL skin texture basic**: Smart UV project, not anatomically mapped. Acceptable for now.
 
 ### Pending Features
-- **SHAPY regressor integration** — ~~use SHAPY to generate synthetic training data~~ DONE (calibration dataset generated). Next: extract SHAPY A2S polynomial coefficients for direct TypeScript replication, or train 8-input regression from existing dataset
-- **8-input regression** — extend regressor to use chest/waist/hip/inseam as inputs (not just height/weight/age/gender). Calibration dataset already has the data. Needs new spec.
-- **Scale to more beta PCs** — SMPL supports 300 PCs, currently using 10. Using 20-50 would capture more body shape variation. Requires regenerating SMPL binary, forward pass, and regressor.
+- **SHAPY regressor integration** — ~~use SHAPY to generate synthetic training data~~ DONE. ~~Extract SHAPY A2S polynomial coefficients~~ DONE (synthetic coefficients in place, real extraction ready via `scripts/extract-shapy-a2s.py --checkpoint`). ~~Train 8-input regression~~ DONE (v2.0.0 coefficient table with 42% MAE improvement).
+- **8-input regression** — ~~extend regressor to use chest/waist/hip/inseam as inputs~~ DONE. Dual-model coefficient table (v2.0.0), 3-way routing in lookupRegress(), refinement skip for full 8-input.
+- **Scale to more beta PCs** — ~~SMPL supports 300 PCs, currently using 10~~ DONE. Forward pass generalized to N PCs, regressor outputs N-length betas, BodyModel.tsx uses buffer geometry updates instead of morph targets, subdivision mapper module, all Python scripts support `--num-shapes`/`--num-betas`/`--no-morphs`. Need to regenerate assets with `--num-shapes 20` or `50` to activate.
+- **SHAPY A2S polynomial extraction** — ~~TypeScript module~~ DONE (`shapyA2S.ts`). 4-tier routing (A2S → 8-input → 4-input → heuristic). Synthetic coefficients in place. Need real SHAPY checkpoint for production-quality coefficients.
 - **Manual beta calibration** — ~~run forward pass on known body shapes~~ DONE (calibrate-validate.py + correction_factors.json). Corrections need to be merged via SHAPY pipeline re-run.
 - Female model (SMPL female pickle available, swap model weights)
 - Garment shell on SMPL body (model garments with matching shape keys)
@@ -371,6 +379,7 @@ git push origin main
 | 005 | 2026-04-14 | `.kiro/SESSION_HANDOFF_005.md` | SMPL integration: full infrastructure spec, SMPL model generation (165k verts, 10 betas), dual engine toggle, body composition selector |
 | 006 | 2026-04-14 | `.kiro/SESSION_HANDOFF_006.md` | SMPL feature parity: layered beta pipeline, negative morph targets, A-pose via skeleton, smooth subdivision, heatmap/measurements on SMPL, 143 tests |
 | 007 | 2026-04-14 | `.kiro/SESSION_HANDOFF_007.md` | SHAPY calibration tasks 6-13, preset fix (public/data/), measurement extractor scale corrections, refinement loop improvements, 176/183 tests |
+| 008 | 2026-04-15 | `.kiro/SESSION_HANDOFF_008.md` | Three new specs created + implemented: 8-input regression (42% MAE improvement), expanded beta PCs (N configurable, buffer geometry), SHAPY polynomial extraction (A2S module, 4-tier routing). 274 tests. |
 
 ---
 
@@ -475,3 +484,30 @@ git push origin main
 - Identified fundamental limitation: demographics-only regression (4 inputs → 10 betas) has irreducible ~10-14cm variance
 - Three paths forward identified: 8-input regression, SHAPY polynomial extraction, scale to more beta PCs
 - Next: new spec for enhanced regressor (8-input + more PCs + SHAPY polynomial extraction)
+
+### Session 008 — 2026-04-15
+- Created 3 new specs: 8-input-regression, shapy-polynomial-extraction, expanded-beta-pcs
+- **8-input-regression** (fully implemented):
+  - Extended regressor from 4 to 8 inputs (+ chest/waist/hip/inseam)
+  - Trained dual-model v2.0.0 coefficient table — 8-input MAE 0.0428 vs 4-input 0.0741 (42% improvement)
+  - 3-way routing in lookupRegress(): 8-input → 4-input → heuristic
+  - Hybrid path for partial measurements (1-3 provided, rest imputed with 0.7 confidence scaling)
+  - Refinement skip when all 4 measurements provided via 8-input path
+  - 22 new tests (unit + PBT + validation + comparison report)
+- **expanded-beta-pcs** (fully implemented):
+  - Forward pass generalized: reads shapeCount from binary header, works with any N in [1, 300]
+  - Regressor outputs N-length betas (zero-padded beyond trained range)
+  - BodyModel.tsx: replaced morph target driving with direct buffer geometry updates for SMPL mode
+  - New subdivisionMapper.ts: barycentric interpolation from 6,890 base → ~165k subdivided vertices
+  - All Python scripts updated: `--num-shapes`, `--num-betas`, `--no-morphs` flags
+  - New generate-subdivision-map.py Blender script
+  - MakeHuman morph target path unchanged
+- **shapy-polynomial-extraction** (fully implemented):
+  - New shapyA2S.ts module: polynomial feature expansion, A2S beta computation, coefficient loading
+  - 4-tier routing in lookupRegress(): A2S → 8-input → 4-input → heuristic
+  - RegressionPath tracking (getLastRegressionPath())
+  - Python extraction script with --synthetic fallback mode
+  - Synthetic A2S coefficients generated (120 validation pairs)
+  - A2S initialization wired into bodyEngine.ts
+- 274 total tests passing (7 pre-existing accuracy-threshold failures unchanged)
+- Next: extract real SHAPY A2S coefficients with checkpoint, regenerate assets with 20-50 PCs
