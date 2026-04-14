@@ -34,35 +34,37 @@ A web-based 3D body avatar that users can customize with their measurements, the
 ### 3D Avatar System
 - **Dual Engine:** User can toggle between SMPL and MakeHuman body models via UI
 - **MakeHuman Model:** FBX → Blender morph targets → GLB (214k vertices, 25 morphs, skin texture)
-- **SMPL Model:** SMPL pickle → Blender script → GLB (165k vertices, 10 beta PCs as morph targets, skin texture)
+- **SMPL Model:** SMPL pickle → Blender script → GLB (165k vertices, 20 paired beta morph targets, A-pose, skin texture, 94.4 MB)
 - **Source FBX:** `public/models/male-base.fbx` (MakeHuman, default male)
 - **Source SMPL:** Downloaded from smpl.is.tue.mpg.de (v1.1.0, male, 300 shape PCs — we use first 10)
+- **SMPL Pickle Location:** `C:\Users\aadit\Downloads\SMPL_python_v.1.1.0\smpl\models\basicmodel_m_lbs_10_207_0_v1.1.0.pkl` (licensed, not in git)
 - **Generated MakeHuman GLB:** `public/models/human-male.glb` (214k vertices, 25 morph targets)
-- **Generated SMPL GLB:** `public/models/human-smpl.glb` (165k vertices, 10 beta morph targets, 53.6 MB)
+- **Generated SMPL GLB:** `public/models/human-smpl.glb` (165k vertices, 20 paired beta morph targets, A-pose, 94.4 MB)
 - **SMPL Browser Binary:** `public/models/smpl/smpl_model.bin` (1.58 MB — template + blend shapes + faces + landmarks)
 - **Blender scripts:** `scripts/generate-morphs.py` (MakeHuman), `scripts/generate-smpl-model.py` (SMPL)
 - **Blender path:** `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`
 
 ### Key Files
 - `src/components/BodyModel.tsx` — Dual model loading (MakeHuman + SMPL GLB), morph target animation, SMPL beta driving, heatmap vertex coloring, engine initialization
-- `src/components/UI/ControlPanel.tsx` — Body engine toggle (top), body composition selector, body inputs, garment selection, heatmap toggle, morph sliders
+- `src/components/UI/ControlPanel.tsx` — Body engine toggle (top), body composition selector (SMPL only), body type presets (MakeHuman only), body inputs, garment selection, heatmap toggle, morph sliders, SMPL measurement display with resolveDisplayMeasurement
 - `src/components/Scene.tsx` — Three.js canvas, lighting, grid
 - `src/components/Controls.tsx` — OrbitControls camera
 - `src/components/Lighting.tsx` — Studio lighting setup
 - `src/components/GarmentShell.tsx` — Garment loader with binding map deformation + morph-sync fallback, opaque fabric materials
-- `src/stores/bodyStore.ts` — Zustand store (user inputs, bodyComposition, bodyEngine, morph overrides, heatmap state)
+- `src/stores/bodyStore.ts` — Zustand store (user inputs, bodyComposition, bodyEngine, morph overrides, heatmap state, smplMeasurements)
 - `src/utils/morphMapper.ts` — Converts user inputs → morph target influences; supports SMPL measurements + body composition boosts
 - `src/utils/heatmapEngine.ts` — Garment coverage + fit scoring + arm detection; `computeHeatmapSmpl()` for SMPL landmark-based regions
 - `src/utils/smoothingEngine.ts` — Laplacian color smoothing for heatmap vertex colors
 - `src/utils/smplForwardPass.ts` — Pure TS SMPL forward pass, binary parser, landmark helper
-- `src/utils/smplRegressor.ts` — Measurement-to-beta regression with body composition (ONNX + lookup fallback)
+- `src/utils/smplRegressor.ts` — Layered beta pipeline: lookupRegress → presetOffsets → compositionBias → customMeasurementRefinement → clamp. Exports computeSmplBetas(), SMPL_PRESET_OFFSETS, COMPOSITION_BIAS, MEASUREMENT_BETA_MAP
+- `src/utils/smplDisplay.ts` — Display rule helper: resolveDisplayMeasurement() for custom vs SMPL-extracted values
 - `src/utils/measurementExtractor.ts` — Extracts circumferences from SMPL mesh at anatomical heights
 - `src/utils/bindingMapCodec.ts` — Binary serialization for garment binding maps
 - `src/utils/garmentDeformer.ts` — Barycentric garment deformation with degenerate fallback
 - `src/utils/bodyEngine.ts` — BodyEngine abstraction (SmplEngine + MakeHumanEngine), event bus
 - `src/utils/engineInit.ts` — Graceful degradation hierarchy
 - `src/utils/garmentRegistry.ts` — Static garment template registry
-- `scripts/generate-smpl-model.py` — Blender: SMPL pickle → subdivided GLB with beta morph targets + skin texture
+- `scripts/generate-smpl-model.py` — Blender: SMPL pickle → A-posed GLB with 20 paired beta morph targets (smooth subdivision interpolation) + skin texture. Uses SMPL skeleton for posing.
 - `scripts/export-smpl-assets.py` — Converts SMPL pickle → browser binary + landmarks JSON
 - `scripts/bake-garment-bindings.py` — Computes barycentric binding maps for garments on SMPL body
 - `src/utils/fitAdvisor.ts` — Fit advisor panel logic
@@ -164,6 +166,20 @@ armScore = normalXAbs + xAbs * 3
 - SVG body silhouette with heatmap regions
 - Separate from the 3D system
 
+### ✅ SMPL Body Engine (Feature Parity with MakeHuman)
+- SMPL model in A-pose (35° shoulder rotation via SMPL skeleton + skinning weights)
+- 165k vertices (2x subdivision), 20 paired morph targets (Beta0–9 + Beta0Neg–9Neg), 94.4 MB GLB
+- Smooth subdivision-interpolated shape keys (no banding artifacts)
+- Layered beta pipeline: base regression → body type presets → body composition bias → custom measurement refinement → clamp [-3, 3]
+- Height handled by group-level Y scaling (same as MakeHuman), weight/shape by betas
+- Heatmap vertex coloring on SMPL mesh with Laplacian smoothing
+- Estimated measurements display using SMPL-extracted values
+- Display rule: when |custom - SMPL-extracted| > 3cm, show SMPL value
+- Smooth animated transitions for all 20 morph targets with positive↔negative crossover
+- Body Type presets (5) shown only for MakeHuman, Body Composition (3) shown only for SMPL
+- Engine migration evaluation: recommends SMPL-only migration (see evaluation.md)
+- 143 tests, 14 property-based tests covering 14 correctness properties
+
 ---
 
 ## Phases
@@ -252,13 +268,18 @@ Phase 2 starts with pre-baked Blender cloth sim (Option A) as a practical founda
 
 ### Pending Fixes
 - **Heatmap boundary jaggedness**: Vertex-based coloring creates some blocky edges at garment boundaries. Could be improved with shader-based approach or higher mesh resolution, but acceptable for Phase 1.
+- **SMPL regressor coefficients are heuristic**: Weight interactions work directionally but magnitudes aren't calibrated against real body data. Need SHAPY integration or trained regressor for accuracy.
+- **SMPL A-pose shape keys in T-pose space**: Shape key deformations computed in T-pose, base mesh posed to A-pose. Minor artifacts possible at extreme beta values near shoulders.
+- **SMPL skin texture basic**: Smart UV project, not anatomically mapped. Acceptable for now.
 
 ### Pending Features
-- Female model (export from MakeHuman + generate morphs)
-- SHAPY/SMPL integration for research-grade accuracy
+- **SHAPY regressor integration** — use SHAPY to generate synthetic training data (measurements → betas), train lightweight lookup table for accurate weight/measurement interactions
+- **Manual beta calibration** — run forward pass on known body shapes, measure outputs, tune coefficients (do after SHAPY)
+- Female model (SMPL female pickle available, swap model weights)
+- Garment shell on SMPL body (model garments with matching shape keys)
 - Age-based body composition changes
 - More NHANES cycles for training data
-- Skin texture quality improvements
+- Skin texture quality improvements (proper UV mapping for SMPL topology)
 - Indian population data (deferred)
 - Shopify integration
 - More garment types (polo, hoodie, jacket, shorts, etc.)
@@ -272,10 +293,16 @@ Phase 2 starts with pre-baked Blender cloth sim (Option A) as a practical founda
 
 ## Key Commands
 
-### Regenerating the model
+### Regenerating the MakeHuman model
 ```bash
 & "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --python scripts/generate-morphs.py -- male
 ```
+
+### Regenerating the SMPL model (A-pose, paired morph targets)
+```bash
+& "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --python scripts/generate-smpl-model.py -- --smpl-pkl "C:\Users\aadit\Downloads\SMPL_python_v.1.1.0\smpl\models\basicmodel_m_lbs_10_207_0_v1.1.0.pkl" --subdivisions 2 --texture public/models/textures/young_lightskinned_male_diffuse.png
+```
+Takes ~70 seconds. Output: `public/models/human-smpl.glb` (~94 MB, 165k vertices, 21 shape keys)
 
 ### Retraining the ML model
 ```bash
@@ -332,6 +359,7 @@ git push origin main
 | 003 | 2026-04-12 | `.kiro/SESSION_HANDOFF_003.md` | Phase 1 refinements: better fit calc, side torso gap fix, color smoothing, jeans boundary fix |
 | 004 | 2026-04-13 | `.kiro/SESSION_HANDOFF_004.md` | Phase 2 implementation: size chart engine, Blender garment pipeline, GarmentShell component, garment shell toggle |
 | 005 | 2026-04-14 | `.kiro/SESSION_HANDOFF_005.md` | SMPL integration: full infrastructure spec, SMPL model generation (165k verts, 10 betas), dual engine toggle, body composition selector |
+| 006 | 2026-04-14 | `.kiro/SESSION_HANDOFF_006.md` | SMPL feature parity: layered beta pipeline, negative morph targets, A-pose via skeleton, smooth subdivision, heatmap/measurements on SMPL, 143 tests |
 
 ---
 
@@ -405,3 +433,21 @@ git push origin main
 - Deleted broken agent hooks (test-on-save, ts-error-check, test-after-task)
 - SMPL model renders standing upright with skin texture — basic beta morph targets working
 - Next: new spec for SMPL customizability (matching MakeHuman feature parity — height/weight mapping, heatmap, negative betas, proper UV mapping)
+
+### Session 006 — 2026-04-14 (Part 2)
+- Created SMPL feature parity spec (9 requirements, 14 correctness properties, 14 top-level tasks)
+- Implemented full layered beta pipeline: lookupRegress → presetOffsets → compositionBias → customMeasurementRefinement → clamp
+- Fixed critical Blender pipeline: replaced nearest-neighbor shape key interpolation with smooth subdivision approach (each deformed mesh subdivided separately)
+- Fixed inverted shape key signs (SMPL PCA convention was opposite to regressor expectations)
+- Implemented proper A-pose using SMPL's 24-joint skeleton + skinning weights (35° shoulder rotation)
+- Added paired positive/negative morph targets (20 shape keys) for full [-3, 3] beta range
+- Wired heatmap rendering to SMPL mesh with Laplacian smoothing
+- Added estimated measurements display using SMPL-extracted values with custom vs extracted display rule
+- Conditional UI: Body Type (5 presets) for MakeHuman only, Body Composition (3 options) for SMPL only
+- Height handled by group-level Y scaling, weight/shape by betas (removed height from regressor)
+- Ground anchoring via periodic bounding box recomputation
+- Created smplDisplay.ts helper for measurement display rules
+- Created engine migration evaluation document (recommends SMPL-only migration)
+- 143 tests passing (14 new property-based tests)
+- Regressor coefficients are heuristic — need SHAPY integration for accuracy (next spec)
+- Next: SHAPY regressor integration spec + trained lookup table for accurate measurements→betas

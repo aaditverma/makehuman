@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useBodyStore, type Gender, type BodyType, type BodyComposition, type BodyEngineType, type GarmentType, type FitPreference } from '../../stores/bodyStore';
 import { estimatedMeasurements } from '../../utils/morphMapper';
 import { getGarmentOptions } from '../../utils/heatmapEngine';
+import { resolveDisplayMeasurement } from '../../utils/smplDisplay';
 
 const bodyTypes: { value: BodyType; label: string }[] = [
   { value: 'slim', label: 'Slim' },
@@ -27,7 +28,8 @@ export function ControlPanel() {
   const { heatmapEnabled, setHeatmapEnabled, garmentType, setGarmentType, garmentSize, setGarmentSize, fitPreference, setFitPreference } = useBodyStore();
   const { garmentShellEnabled, setGarmentShellEnabled } = useBodyStore();
   const { bodyEngine, setBodyEngine, setBodyComposition } = useBodyStore();
-  const estimated = useMemo(() => estimatedMeasurements(inputs), [inputs]);
+  const smplMeasurements = useBodyStore((s) => s.smplMeasurements);
+  const estimated = useMemo(() => estimatedMeasurements(inputs, smplMeasurements), [inputs, smplMeasurements]);
   const garmentOptions = useMemo(() => getGarmentOptions(), []);
 
   return (
@@ -226,49 +228,53 @@ export function ControlPanel() {
           </div>
         </section>
 
-        {/* Body Type */}
-        <section className="space-y-3">
-          <h2 className="text-sm font-medium text-gray-300">Body Type</h2>
-          <div className="flex flex-wrap gap-2">
-            {bodyTypes.map((bt) => (
-              <button
-                key={bt.value}
-                onClick={() => setInput('bodyType', bt.value)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  inputs.bodyType === bt.value
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/40'
-                }`}
-              >
-                {bt.label}
-              </button>
-            ))}
-          </div>
-        </section>
+        {/* Body Type — MakeHuman only */}
+        {bodyEngine === 'makehuman-only' && (
+          <section className="space-y-3">
+            <h2 className="text-sm font-medium text-gray-300">Body Type</h2>
+            <div className="flex flex-wrap gap-2">
+              {bodyTypes.map((bt) => (
+                <button
+                  key={bt.value}
+                  onClick={() => setInput('bodyType', bt.value)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    inputs.bodyType === bt.value
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/40'
+                  }`}
+                >
+                  {bt.label}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
-        {/* Body Composition */}
-        <section className="space-y-3">
-          <h2 className="text-sm font-medium text-gray-300">Body Composition</h2>
-          <div className="flex gap-2">
-            {bodyCompositions.map((bc) => (
-              <button
-                key={bc.value}
-                onClick={() => setBodyComposition(bc.value)}
-                title={bc.desc}
-                className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  inputs.bodyComposition === bc.value
-                    ? 'bg-amber-600 text-white'
-                    : 'bg-amber-600/20 text-amber-300 hover:bg-amber-600/40'
-                }`}
-              >
-                {bc.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-[10px] text-gray-500">
-            Distinguishes muscular vs soft builds at the same weight
-          </p>
-        </section>
+        {/* Body Composition — SMPL only */}
+        {bodyEngine === 'smpl-refined' && (
+          <section className="space-y-3">
+            <h2 className="text-sm font-medium text-gray-300">Body Composition</h2>
+            <div className="flex gap-2">
+              {bodyCompositions.map((bc) => (
+                <button
+                  key={bc.value}
+                  onClick={() => setBodyComposition(bc.value)}
+                  title={bc.desc}
+                  className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    inputs.bodyComposition === bc.value
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-amber-600/20 text-amber-300 hover:bg-amber-600/40'
+                  }`}
+                >
+                  {bc.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-500">
+              Distinguishes muscular vs soft builds at the same weight
+            </p>
+          </section>
+        )}
 
         {/* Custom Measurements (optional) */}
         <section className="space-y-3">
@@ -319,13 +325,13 @@ export function ControlPanel() {
             <span className="text-gray-400">BMI</span>
             <span className="text-gray-200 text-right tabular-nums">{estimated.bmi}</span>
             <span className="text-gray-400">Bust/Chest</span>
-            <span className="text-gray-200 text-right tabular-nums">{estimated.bustCm} cm</span>
+            <span className="text-gray-200 text-right tabular-nums">{resolveDisplayMeasurement(inputs.bustCm, estimated.bustCm, smplMeasurements?.chestCm ?? null)} cm</span>
             <span className="text-gray-400">Waist</span>
-            <span className="text-gray-200 text-right tabular-nums">{estimated.waistCm} cm</span>
+            <span className="text-gray-200 text-right tabular-nums">{resolveDisplayMeasurement(inputs.waistCm, estimated.waistCm, smplMeasurements?.waistCm ?? null)} cm</span>
             <span className="text-gray-400">Hip</span>
-            <span className="text-gray-200 text-right tabular-nums">{estimated.hipCm} cm</span>
+            <span className="text-gray-200 text-right tabular-nums">{resolveDisplayMeasurement(inputs.hipCm, estimated.hipCm, smplMeasurements?.hipCm ?? null)} cm</span>
             <span className="text-gray-400">Inseam</span>
-            <span className="text-gray-200 text-right tabular-nums">{estimated.inseamCm} cm</span>
+            <span className="text-gray-200 text-right tabular-nums">{resolveDisplayMeasurement(inputs.inseamCm, estimated.inseamCm, smplMeasurements?.inseamCm ?? null)} cm</span>
           </div>
         </section>
 

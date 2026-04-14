@@ -1,8 +1,9 @@
 /**
- * Property-based tests for smplForwardPass.ts — Tasks 1.2, 1.3
+ * Property-based tests for smplForwardPass.ts — Tasks 1.2, 1.3, 11.5
  *
  * Property 1: SMPL forward pass topology and coordinate invariant
- * Property 2: SMPL forward pass numerical equivalence (determinism + zero-beta identity)
+ * Property 2 (existing): SMPL forward pass numerical equivalence (determinism + zero-beta identity)
+ * Property 2 (mesh validity): Forward pass mesh validity — finite vertices, positive bounding box, bounded distance
  *
  * Uses fast-check for property-based testing.
  */
@@ -223,6 +224,64 @@ describe('Property 2: SMPL forward pass numerical equivalence (determinism + zer
             if (out1[i] !== out2[i]) return false;
           }
           return true;
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+}, 30000);
+
+
+/* ------------------------------------------------------------------ */
+/*  Property 2: Forward pass mesh validity                             */
+/* ------------------------------------------------------------------ */
+
+describe('Property 2: Forward pass mesh validity', () => {
+  /**
+   * **Validates: Requirements 1.4**
+   *
+   * For any 10-element beta vector in [-3, 3], verify the forward pass produces:
+   * - All finite vertices (no NaN or Infinity)
+   * - Positive bounding box volume (maxY - minY > 0.5m)
+   * - No vertex more than 3m from the origin
+   */
+  it('produces finite vertices, positive bounding box height, and bounded distance from origin', () => {
+    const out = new Float32Array(SMPL_VERTEX_COUNT * 3);
+
+    fc.assert(
+      fc.property(
+        fc.array(fc.double({ min: -3, max: 3, noNaN: true, noDefaultInfinity: true }), { minLength: 10, maxLength: 10 }),
+        (betaArr) => {
+          const betas = new Float64Array(betaArr);
+          computeSmplVertices(testModel, betas, out);
+
+          let minY = Infinity, maxY = -Infinity;
+
+          for (let i = 0; i < SMPL_VERTEX_COUNT; i++) {
+            const x = out[i * 3];
+            const y = out[i * 3 + 1];
+            const z = out[i * 3 + 2];
+
+            // All vertices must be finite
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+              expect.fail(`Vertex ${i} has non-finite values: (${x}, ${y}, ${z})`);
+            }
+
+            // No vertex more than 3m from origin
+            const dist = Math.sqrt(x * x + y * y + z * z);
+            if (dist > 3.0) {
+              expect.fail(`Vertex ${i} is ${dist.toFixed(3)}m from origin, exceeds 3m limit`);
+            }
+
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+
+          // Bounding box height must be > 0.5m
+          const height = maxY - minY;
+          if (height <= 0.5) {
+            expect.fail(`Bounding box height ${height.toFixed(3)}m is <= 0.5m`);
+          }
         },
       ),
       { numRuns: 100 },

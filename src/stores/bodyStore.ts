@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { BrandSizeChart } from '../utils/sizeChartEngine';
+import type { ExtractedMeasurements } from '../utils/measurementExtractor';
 
 export type Gender = 'male' | 'female';
 export type BodyType = 'slim' | 'average' | 'athletic' | 'curvy' | 'heavy';
@@ -49,6 +50,7 @@ interface BodyStore {
   fitPreference: FitPreference;
   brandSizeChart: BrandSizeChart | null;
   currentMorphInfluences: Record<string, number>;
+  smplMeasurements: ExtractedMeasurements | null;
   setInput: <K extends keyof UserInputs>(key: K, value: UserInputs[K]) => void;
   setInputs: (partial: Partial<UserInputs>) => void;
   setBodyComposition: (v: BodyComposition) => void;
@@ -62,6 +64,7 @@ interface BodyStore {
   setFitPreference: (v: FitPreference) => void;
   setBrandSizeChart: (chart: BrandSizeChart | null) => void;
   setCurrentMorphInfluences: (influences: Record<string, number>) => void;
+  setSmplMeasurements: (m: ExtractedMeasurements | null) => void;
   reset: () => void;
 }
 
@@ -76,6 +79,7 @@ export const useBodyStore = create<BodyStore>((set) => ({
   fitPreference: 'regular',
   brandSizeChart: null,
   currentMorphInfluences: {},
+  smplMeasurements: null,
 
   setInput: (key, value) =>
     set((s) => ({ inputs: { ...s.inputs, [key]: value } })),
@@ -101,6 +105,7 @@ export const useBodyStore = create<BodyStore>((set) => ({
   setFitPreference: (v) => set({ fitPreference: v }),
   setBrandSizeChart: (chart) => set({ brandSizeChart: chart }),
   setCurrentMorphInfluences: (influences) => set({ currentMorphInfluences: influences }),
+  setSmplMeasurements: (m) => set({ smplMeasurements: m }),
 
-  reset: () => set({ inputs: { ...defaultInputs }, bodyEngine: 'smpl-refined' as BodyEngineType, morphOverrides: null, heatmapEnabled: false, brandSizeChart: null, currentMorphInfluences: {} }),
+  reset: () => set({ inputs: { ...defaultInputs }, bodyEngine: 'smpl-refined' as BodyEngineType, morphOverrides: null, heatmapEnabled: false, brandSizeChart: null, currentMorphInfluences: {}, smplMeasurements: null }),
 }));

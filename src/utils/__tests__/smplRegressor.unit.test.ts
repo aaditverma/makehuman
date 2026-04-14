@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { initSmplRegressor } from '../smplRegressor';
-import type { RegressorInputs, BodyComposition } from '../smplRegressor';
+import { initSmplRegressor, computeSmplBetas } from '../smplRegressor';
+import type { RegressorInputs, BodyComposition, PipelineInputs } from '../smplRegressor';
 
 describe('smplRegressor', () => {
   it('initSmplRegressor returns a function (lookup mode)', async () => {
@@ -50,19 +50,18 @@ describe('smplRegressor', () => {
     }
   });
 
-  it('produces different betas for athletic vs heavy at same height/weight', async () => {
-    const regress = await initSmplRegressor({ mode: 'lookup' });
-    const base: RegressorInputs = {
+  it('produces different betas for athletic vs heavy at same height/weight', () => {
+    const base: PipelineInputs = {
       heightCm: 180,
       weightKg: 85,
       age: 30,
       gender: 'male',
     };
 
-    const athleticBetas = regress({ ...base, bodyComposition: 'athletic' });
-    const heavyBetas = regress({ ...base, bodyComposition: 'heavy' });
+    const athleticBetas = computeSmplBetas({ ...base, bodyComposition: 'athletic' });
+    const heavyBetas = computeSmplBetas({ ...base, bodyComposition: 'heavy' });
 
-    // L2 distance should be > 0.1 (Property 11 requirement)
+    // L2 distance should be > 0.1
     let l2 = 0;
     for (let i = 0; i < 10; i++) {
       l2 += (athleticBetas[i] - heavyBetas[i]) ** 2;
@@ -149,14 +148,13 @@ describe('smplRegressor', () => {
     expect(elapsed / 1000).toBeLessThan(50);
   });
 
-  it('produces distinct betas for all three body compositions', async () => {
-    const regress = await initSmplRegressor({ mode: 'lookup' });
-    const base: RegressorInputs = {
+  it('produces distinct betas for all three body compositions', () => {
+    const base: PipelineInputs = {
       heightCm: 170, weightKg: 70, age: 35, gender: 'female',
     };
 
     const compositions: BodyComposition[] = ['athletic', 'average', 'heavy'];
-    const results = compositions.map(c => regress({ ...base, bodyComposition: c }));
+    const results = compositions.map(c => computeSmplBetas({ ...base, bodyComposition: c }));
 
     // Each pair should be distinct
     for (let a = 0; a < results.length; a++) {

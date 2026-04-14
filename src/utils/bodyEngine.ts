@@ -13,8 +13,8 @@ import * as THREE from 'three';
 import type { UserInputs } from '../stores/bodyStore';
 import type { SmplModelData } from './smplForwardPass';
 import { computeSmplVertices, getSmplLandmark, SMPL_VERTEX_COUNT } from './smplForwardPass';
-import type { SmplRegressorFn, RegressorInputs } from './smplRegressor';
-import { initSmplRegressor } from './smplRegressor';
+import type { SmplRegressorFn, RegressorInputs, PipelineInputs } from './smplRegressor';
+import { initSmplRegressor, computeSmplBetas } from './smplRegressor';
 import type { ExtractedMeasurements } from './measurementExtractor';
 import { extractMeasurements } from './measurementExtractor';
 import { computeSmplNormals } from './garmentDeformer';
@@ -91,21 +91,22 @@ export class SmplEngine implements BodyEngine {
   }
 
   update(inputs: UserInputs): void {
-    // Build regressor inputs from UserInputs
-    const regressorInputs: RegressorInputs = {
+    // Build pipeline inputs from UserInputs (includes bodyType for preset offsets)
+    const pipelineInputs: PipelineInputs = {
       heightCm: inputs.heightCm,
       weightKg: inputs.weightKg,
       age: inputs.age,
       gender: inputs.gender,
       bodyComposition: inputs.bodyComposition ?? 'average',
+      bodyType: inputs.bodyType,
       bustCm: inputs.bustCm ?? undefined,
       waistCm: inputs.waistCm ?? undefined,
       hipCm: inputs.hipCm ?? undefined,
       inseamCm: inputs.inseamCm ?? undefined,
     };
 
-    // Regressor: measurements → 10 betas
-    this.betas = this.regressor(regressorInputs);
+    // Layered pipeline: base → preset offsets → composition bias → refinement → clamp
+    this.betas = computeSmplBetas(pipelineInputs, this.model);
 
     // Forward pass: betas → vertex positions
     computeSmplVertices(this.model, this.betas, this.vertices);

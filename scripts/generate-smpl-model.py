@@ -200,71 +200,245 @@ bpy.ops.object.mode_set(mode='OBJECT')
 bpy.ops.object.shade_smooth()
 print("  Applied smooth shading")
 
-# ─── Subdivide FIRST (before shape keys) ─────────────────────────────────────
+# ─── Create Armature and Pose into A-Pose ─────────────────────────────────────
+# Use SMPL's actual skeleton (24 joints) and skinning weights for proper posing.
+# SMPL joint indices: 0=pelvis, 1=left_hip, 2=right_hip, ..., 16=left_shoulder,
+# 17=right_shoulder, 18=left_elbow, 19=right_elbow, 20=left_wrist, 21=right_wrist
 
-print(f"\n[3/6] Subdividing {SUBDIVISIONS}x (before shape keys)...")
+print("  Creating armature for A-pose...")
+
+# Load skinning weights and joint regressor
+skin_weights = np.array(smpl_data['weights'], dtype=np.float64)  # (6890, 24)
+j_regressor = smpl_data.get('J_regressor')
+if hasattr(j_regressor, 'toarray'):
+    j_regressor = j_regressor.toarray()
+j_regressor = np.array(j_regressor, dtype=np.float64)  # (24, 6890)
+
+# Compute joint positions from template vertices (in Blender Z-up space)
+joint_positions = j_regressor @ v_template  # (24, 3)
+
+# SMPL joint names (standard 24-joint skeleton)
+SMPL_JOINT_NAMES = [
+    'pelvis', 'left_hip', 'right_hip', 'spine1', 'left_knee', 'right_knee',
+    'spine2', 'left_ankle', 'right_ankle', 'spine3', 'left_foot', 'right_foot',
+    'neck', 'left_collar', 'right_collar', 'head', 'left_shoulder', 'right_shoulder',
+    'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist', 'left_hand', 'right_hand',
+]
+
+# SMPL kinematic tree (parent indices)
+kintree = np.array(smpl_data['kintree_table'], dtype=np.int32)  # (2, 24)
+parents = kintree[0]  # parent joint index for each joint
+
+# Create armature
+arm_data = bpy.data.armatures.new("SMPL_Armature")
+arm_obj = bpy.data.objects.new("SMPL_Armature", arm_data)
+bpy.context.collection.objects.link(arm_obj)
+bpy.context.view_layer.objects.active = arm_obj
+arm_obj.select_set(True)
+
+# Enter edit mode to create bones
+bpy.ops.object.mode_set(mode='EDIT')
+
+bones = {}
+for i, name in enumerate(SMPL_JOINT_NAMES):
+    bone = arm_data.edit_bones.new(name)
+    jpos = joint_positions[i]
+    bone.head = (jpos[0], jpos[1], jpos[2])
+    # Tail points toward child or slightly up
+    bone.tail = (jpos[0], jpos[1], jpos[2] + 0.05)
+    bones[name] = bone
+
+# Set parent relationships
+for i, name in enumerate(SMPL_JOINT_NAMES):
+    if i == 0:
+        continue  # pelvis has no parent
+    parent_idx = parents[i]
+    if parent_idx >= 0 and parent_idx < len(SMPL_JOINT_NAMES):
+        bones[name].parent = bones[SMPL_JOINT_NAMES[parent_idx]]
+        # Point parent tail toward this child
+        bones[SMPL_JOINT_NAMES[parent_idx]].tail = bones[name].head
+
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Parent mesh to armature with vertex groups
+obj.select_set(True)
+arm_obj.select_set(True)
+bpy.context.view_layer.objects.active = arm_obj
+bpy.ops.object.parent_set(type='ARMATURE_NAME')
+
+# Assign skinning weights
+for ji, jname in enumerate(SMPL_JOINT_NAMES):
+    if jname not in obj.vertex_groups:
+        vg = obj.vertex_groups.new(name=jname)
+    else:
+        vg = obj.vertex_groups[jname]
+    
+    for vi in range(len(v_template)):
+        w = skin_weights[vi, ji]
+        if w > 0.001:
+            vg.add([vi], float(w), 'REPLACE')
+
+# Add armature modifier
+arm_mod = obj.modifiers.new(name="Armature", type='ARMATURE')
+arm_mod.object = arm_obj
+
+# Pose into A-pose: rotate shoulders down ~35 degrees
+bpy.context.view_layer.objects.active = arm_obj
+bpy.ops.object.mode_set(mode='POSE')
+
+ARM_ANGLE_DEG = 35
+
+# Left shoulder (joint 16) — rotate around local Y axis (forward in Blender)
+left_shoulder = arm_obj.pose.bones.get('left_shoulder')
+if left_shoulder:
+    left_shoulder.rotation_mode = 'XYZ'
+    left_shoulder.rotation_euler = (0, math.radians(ARM_ANGLE_DEG), 0)
+
+# Right shoulder (joint 17) — rotate opposite direction
+right_shoulder = arm_obj.pose.bones.get('right_shoulder')
+if right_shoulder:
+    right_shoulder.rotation_mode = 'XYZ'
+    right_shoulder.rotation_euler = (0, math.radians(-ARM_ANGLE_DEG), 0)
+
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Apply the pose as rest pose
+bpy.context.view_layer.objects.active = arm_obj
+bpy.ops.object.mode_set(mode='POSE')
+bpy.ops.pose.armature_apply(selected=False)
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Apply armature modifier to bake the pose into the mesh
+bpy.context.view_layer.objects.active = obj
+obj.select_set(True)
+arm_obj.select_set(False)
+bpy.ops.object.modifier_apply(modifier=arm_mod.name)
+
+# Remove armature (we only needed it for posing)
+bpy.data.objects.remove(arm_obj, do_unlink=True)
+bpy.data.armatures.remove(arm_data)
+
+# Update v_template to match the posed mesh (for shape key computation)
+for vi, v in enumerate(mesh.vertices):
+    v_template[vi] = [v.co.x, v.co.y, v.co.z]
+
+mesh.update()
+print(f"  Arms posed into A-pose ({ARM_ANGLE_DEG}° down) using SMPL skeleton")
+
+# ─── Add Shape Keys on base mesh, then subdivide via workaround ───────────────
+# Blender cannot apply a subdivision modifier to a mesh with shape keys.
+# Workaround: for each shape key, we create a separate subdivided mesh to get
+# the smooth interpolated positions, then transfer those positions back.
+#
+# Strategy:
+#   1. Add shape keys on the 6,890-vertex base mesh
+#   2. For each shape key, create a temp copy with that shape key active,
+#      subdivide it, read the subdivided positions
+#   3. Create the final subdivided mesh with shape keys from the temp data
+
+print(f"\n[3/6] Computing smooth shape key displacements via subdivision...")
 t0 = time.time()
 
-sub = obj.modifiers.new(name="Subdivision", type='SUBSURF')
+BETA_SCALE = 3.0  # morph influence 1.0 = beta value 3.0
+base_vert_count = len(v_template)
+
+# First, create a subdivided version of the base mesh to get the target vertex count
+# and the subdivided basis positions
+temp_obj = obj.copy()
+temp_obj.data = obj.data.copy()
+bpy.context.collection.objects.link(temp_obj)
+bpy.context.view_layer.objects.active = temp_obj
+temp_obj.select_set(True)
+obj.select_set(False)
+
+sub = temp_obj.modifiers.new(name="Subdivision", type='SUBSURF')
 sub.levels = SUBDIVISIONS
 sub.render_levels = SUBDIVISIONS
 bpy.ops.object.modifier_apply(modifier=sub.name)
-bpy.ops.object.shade_smooth()
 
-subdivided_vert_count = len(mesh.vertices)
-print(f"  Now {subdivided_vert_count:,} vertices, {len(mesh.polygons):,} faces")
-print(f"  Subdivision took {time.time() - t0:.1f}s")
+subdivided_vert_count = len(temp_obj.data.vertices)
+basis_subdiv_coords = np.array([(v.co.x, v.co.y, v.co.z) for v in temp_obj.data.vertices])
+print(f"  Subdivided basis: {subdivided_vert_count:,} vertices")
 
-# ─── Add Shape Keys (SMPL Beta PCs as Morph Targets) ─────────────────────────
-# We need to interpolate the SMPL shape displacements onto the subdivided mesh.
-# Strategy: for each subdivided vertex, find the nearest original SMPL vertex
-# and use its displacement. This works because subdivision preserves the original
-# vertices and adds new ones between them.
-
-print(f"\n[4/6] Adding {NUM_SHAPES} shape key morph targets to subdivided mesh...")
-
-# Get subdivided vertex positions
-subdiv_coords = np.array([(v.co.x, v.co.y, v.co.z) for v in mesh.vertices])
-
-# Build KD-tree from original SMPL vertices for nearest-neighbor lookup
-from mathutils import kdtree as kd_module
-
-kd = kd_module.KDTree(len(v_template))
-for i, v in enumerate(v_template):
-    kd.insert((v[0], v[1], v[2]), i)
-kd.balance()
-
-# For each subdivided vertex, find nearest original SMPL vertex
-print("  Building vertex correspondence map...")
-nearest_smpl_idx = np.zeros(subdivided_vert_count, dtype=np.int32)
-for vi in range(subdivided_vert_count):
-    co = subdiv_coords[vi]
-    _, idx, _ = kd.find((co[0], co[1], co[2]))
-    nearest_smpl_idx[vi] = idx
-
-# Basis shape key
-obj.shape_key_add(name="Basis", from_mix=False)
-
-BETA_SCALE = 3.0  # morph influence 1.0 = beta value 3.0
+# Now compute subdivided positions for each shape key direction
+# by temporarily deforming the base mesh and subdividing
+shape_key_data = {}  # name → subdivided coords (N, 3)
 
 for pc_idx in range(NUM_SHAPES):
-    name = f"Beta{pc_idx}"
-    sk = obj.shape_key_add(name=name, from_mix=False)
-    
-    # shapedirs is (6890, 3, N) — extract PC at index pc_idx
-    smpl_displacements = shapedirs[:, :, pc_idx] * BETA_SCALE  # (6890, 3)
-    
-    for vi in range(subdivided_vert_count):
-        smpl_vi = nearest_smpl_idx[vi]
-        sk.data[vi].co.x = subdiv_coords[vi, 0] + smpl_displacements[smpl_vi, 0]
-        sk.data[vi].co.y = subdiv_coords[vi, 1] + smpl_displacements[smpl_vi, 1]
-        sk.data[vi].co.z = subdiv_coords[vi, 2] + smpl_displacements[smpl_vi, 2]
-    
-    disp_mag = np.linalg.norm(smpl_displacements, axis=1)
-    print(f"  + {name}: max displacement {disp_mag.max()*1000:.1f}mm, "
-          f"mean {disp_mag.mean()*1000:.1f}mm")
+    for direction, sign, suffix in [(+1, -BETA_SCALE, ""), (-1, BETA_SCALE, "Neg")]:
+        name = f"Beta{pc_idx}{suffix}"
+        
+        # Create a temp mesh with the deformed positions
+        # NOTE: signs are flipped because SMPL's PCA convention has the opposite
+        # direction from what we want (positive beta = larger body).
+        deformed_verts = v_template + shapedirs[:, :, pc_idx] * sign
+        
+        temp2_mesh = bpy.data.meshes.new(f"temp_{name}")
+        temp2_obj = bpy.data.objects.new(f"temp_{name}", temp2_mesh)
+        bpy.context.collection.objects.link(temp2_obj)
+        
+        verts_list2 = [tuple(v) for v in deformed_verts]
+        faces_list2 = [tuple(f) for f in faces]
+        temp2_mesh.from_pydata(verts_list2, [], faces_list2)
+        temp2_mesh.update()
+        
+        # Subdivide
+        bpy.context.view_layer.objects.active = temp2_obj
+        temp2_obj.select_set(True)
+        sub2 = temp2_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+        sub2.levels = SUBDIVISIONS
+        sub2.render_levels = SUBDIVISIONS
+        bpy.ops.object.modifier_apply(modifier=sub2.name)
+        
+        shape_key_data[name] = np.array([(v.co.x, v.co.y, v.co.z) for v in temp2_obj.data.vertices])
+        
+        # Clean up temp object
+        bpy.data.objects.remove(temp2_obj, do_unlink=True)
+        bpy.data.meshes.remove(temp2_mesh)
+        
+        disp = shape_key_data[name] - basis_subdiv_coords
+        disp_mag = np.linalg.norm(disp, axis=1)
+        print(f"  + {name}: max displacement {disp_mag.max()*1000:.1f}mm, "
+              f"mean {disp_mag.mean()*1000:.1f}mm")
 
-print(f"  Total shape keys: {len(obj.data.shape_keys.key_blocks)}")
+print(f"  Shape key computation took {time.time() - t0:.1f}s")
+
+# ─── Build final subdivided mesh with shape keys ─────────────────────────────
+
+print(f"\n[4/6] Building final mesh with {NUM_SHAPES * 2} smooth shape keys...")
+
+# Remove the original low-res object, use the subdivided temp as our base
+bpy.data.objects.remove(obj, do_unlink=True)
+bpy.data.meshes.remove(mesh)
+
+obj = temp_obj
+mesh = obj.data
+obj.name = "SMPL_Body"
+mesh.name = "SMPL_Body"
+bpy.context.view_layer.objects.active = obj
+obj.select_set(True)
+
+# Fix normals and smooth shading on subdivided mesh
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.normals_make_consistent(inside=False)
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.object.shade_smooth()
+
+# Add shape keys to the subdivided mesh
+obj.shape_key_add(name="Basis", from_mix=False)
+
+for pc_idx in range(NUM_SHAPES):
+    for suffix in ["", "Neg"]:
+        name = f"Beta{pc_idx}{suffix}"
+        sk = obj.shape_key_add(name=name, from_mix=False)
+        coords = shape_key_data[name]
+        for vi in range(subdivided_vert_count):
+            sk.data[vi].co.x = coords[vi, 0]
+            sk.data[vi].co.y = coords[vi, 1]
+            sk.data[vi].co.z = coords[vi, 2]
+
+print(f"  Final mesh: {subdivided_vert_count:,} vertices, {len(mesh.polygons):,} faces")
+print(f"  Shape keys: {len(obj.data.shape_keys.key_blocks)}")
 
 
 # ─── UV Unwrap + Texture ──────────────────────────────────────────────────────
@@ -356,7 +530,7 @@ print(f"  SMPL Model Generation Complete")
 print(f"{'=' * 60}")
 print(f"  Vertices:     {len(mesh.vertices):,}")
 print(f"  Faces:        {len(mesh.polygons):,}")
-print(f"  Shape keys:   {len(obj.data.shape_keys.key_blocks)} (Basis + {NUM_SHAPES} betas)")
+print(f"  Shape keys:   {len(obj.data.shape_keys.key_blocks)} (Basis + {NUM_SHAPES} positive + {NUM_SHAPES} negative)")
 print(f"  Subdivisions: {SUBDIVISIONS}")
 print(f"  File size:    {file_size / 1024 / 1024:.1f} MB")
 print(f"  Output:       {OUT_PATH}")

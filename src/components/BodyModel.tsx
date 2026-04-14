@@ -47,6 +47,9 @@ export function BodyModel() {
   const bodyHeightRange = useRef<{ min: number; max: number }>({ min: 0, max: 1.73 });
   const adjacencyRef = useRef<AdjacencyMap | null>(null);
 
+  // Ground tracking
+  const groundFrameCounter = useRef(0);
+
   // SMPL refinement state
   const [bodyEngine, setBodyEngine] = useState<BodyEngine | null>(null);
   const smplMeasurementsRef = useRef<ExtractedMeasurements | null>(null);
@@ -84,6 +87,7 @@ export function BodyModel() {
   useEffect(() => {
     if (!bodyEngine) {
       smplMeasurementsRef.current = null;
+      useBodyStore.getState().setSmplMeasurements(null);
       return;
     }
 
@@ -93,8 +97,10 @@ export function BodyModel() {
     // Extract refined measurements if SMPL engine
     if (bodyEngine instanceof SmplEngine) {
       smplMeasurementsRef.current = bodyEngine.lastMeasurements;
+      useBodyStore.getState().setSmplMeasurements(bodyEngine.lastMeasurements);
     } else {
       smplMeasurementsRef.current = null;
+      useBodyStore.getState().setSmplMeasurements(null);
     }
   }, [bodyEngine, inputs]);
 
@@ -138,6 +144,11 @@ export function BodyModel() {
     });
 
     meshRef.current = foundMesh;
+
+    // Clear adjacency cache — mesh topology changed (different engine = different vertex/face count)
+    adjacencyRef.current = null;
+    // Force immediate ground recomputation on next frame
+    groundFrameCounter.current = 3;
 
     // Heatmap material
     heatmapMaterialRef.current = new THREE.MeshBasicMaterial({ vertexColors: true });
@@ -185,19 +196,27 @@ export function BodyModel() {
     if (bodyEngineType === 'smpl-refined' && bodyEngine instanceof SmplEngine) {
       // SMPL mode: drive Beta0-Beta9 morph targets directly from regressor
       const betas = bodyEngine.currentBetas;
-      morphNamesRef.current.forEach((name, i) => {
-        if (name.startsWith('Beta')) {
-          const betaIdx = parseInt(name.replace('Beta', ''), 10);
-          // Morph influence 0-1 maps to beta 0-3 (BETA_SCALE in the Blender script)
-          // Regressor outputs betas in [-3, 3], so we map to [0, 1] for positive
-          // and use negative morph targets if needed
-          // For now: influence = beta / 3, clamped to [0, 1]
-          const betaVal = betaIdx < betas.length ? betas[betaIdx] : 0;
-          targetInfluences.current[i] = Math.max(0, Math.min(1, betaVal / 3.0));
+      morphNamesRef.current.forEach((name, idx) => {
+        const match = name.match(/^Beta(\d+)(Neg)?$/);
+        if (!match) { targetInfluences.current[idx] = 0; return; }
+
+        const betaIdx = parseInt(match[1], 10);
+        const isNeg = match[2] === 'Neg';
+        const betaVal = betaIdx < betas.length ? betas[betaIdx] : 0;
+
+        if (isNeg) {
+          targetInfluences.current[idx] = Math.max(0, Math.min(1, -betaVal / 3.0));
         } else {
-          targetInfluences.current[i] = 0;
+          targetInfluences.current[idx] = Math.max(0, Math.min(1, betaVal / 3.0));
         }
       });
+
+      // SMPL: use group-level height scaling (same as MakeHuman) for clean height changes.
+      // Beta-based height (β0) changes proportions unnaturally.
+      const heightRatio = inputs.heightCm / 175;
+      const widthCompensation = 1 + (1 - heightRatio) * 0.15; // less aggressive than MakeHuman
+      targetHeightScale.current = heightRatio;
+      targetWidthScale.current = widthCompensation;
     } else {
       // MakeHuman mode: use existing morph mapper
       const smplMeas = smplMeasurementsRef.current;
@@ -205,12 +224,13 @@ export function BodyModel() {
       morphNamesRef.current.forEach((name, i) => {
         targetInfluences.current[i] = morphs[name] ?? 0;
       });
-    }
 
-    const heightRatio = inputs.heightCm / 175;
-    const widthCompensation = 1 + (1 - heightRatio) * 0.3;
-    targetHeightScale.current = heightRatio;
-    targetWidthScale.current = widthCompensation;
+      // MakeHuman: apply group-level height scaling + width compensation
+      const heightRatio = inputs.heightCm / 175;
+      const widthCompensation = 1 + (1 - heightRatio) * 0.3;
+      targetHeightScale.current = heightRatio;
+      targetWidthScale.current = widthCompensation;
+    }
   }, [inputs, morphOverrides, bodyEngine, bodyEngineType]);
 
   // Heatmap — use SMPL landmark-based coverage when SMPL engine active
@@ -310,6 +330,21 @@ export function BodyModel() {
     currentHeightScale.current = damp(currentHeightScale.current, targetHeightScale.current, SMOOTH, dt);
     currentWidthScale.current = damp(currentWidthScale.current, targetWidthScale.current, SMOOTH, dt);
     groupRef.current.scale.set(currentWidthScale.current, currentHeightScale.current, currentWidthScale.current);
+
+    // Keep feet on the ground: morph targets can shift the lowest vertex.
+    // Recompute ground offset periodically so feet stay at Y=0 in world space.
+    groundFrameCounter.current++;
+    if (groundFrameCounter.current >= 3) {
+      groundFrameCounter.current = 0;
+      mesh.geometry.computeBoundingBox();
+      const bb = mesh.geometry.boundingBox;
+      if (bb) {
+        // Set scene offset so the mesh's lowest point sits at local Y=0.
+        // The group's scaleY then scales everything uniformly from Y=0,
+        // keeping feet planted on the ground plane.
+        clonedScene.position.y = -bb.min.y;
+      }
+    }
 
     for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
       const cur = currentInfluences.current[i] ?? 0;
