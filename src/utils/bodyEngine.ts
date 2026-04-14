@@ -14,7 +14,7 @@ import type { UserInputs } from '../stores/bodyStore';
 import type { SmplModelData } from './smplForwardPass';
 import { computeSmplVertices, getSmplLandmark, SMPL_VERTEX_COUNT } from './smplForwardPass';
 import type { SmplRegressorFn, RegressorInputs, PipelineInputs } from './smplRegressor';
-import { initSmplRegressor, computeSmplBetas, loadCalibratedCoefficients, applyCalibratedCoefficients } from './smplRegressor';
+import { initSmplRegressor, computeSmplBetas, loadCalibratedCoefficients, applyCalibratedCoefficients, setActiveShapeCount } from './smplRegressor';
 import type { ExtractedMeasurements } from './measurementExtractor';
 import { extractMeasurements } from './measurementExtractor';
 import { computeSmplNormals } from './garmentDeformer';
@@ -61,7 +61,10 @@ export class SmplEngine implements BodyEngine {
     this.regressor = regressor;
     this.vertices = new Float32Array(SMPL_VERTEX_COUNT * 3);
     this.normals = new Float32Array(SMPL_VERTEX_COUNT * 3);
-    this.betas = new Float64Array(10);
+    this.betas = new Float64Array(model.shapeCount);
+
+    // Set the active shape count for the regressor
+    setActiveShapeCount(model.shapeCount);
 
     // Initialize with template mesh
     this.vertices.set(model.templateVertices);

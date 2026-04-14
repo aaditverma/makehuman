@@ -1,13 +1,23 @@
 """
 Blender script: Load SMPL model from pickle, create mesh with shape key
-morph targets (10 beta PCs), subdivide, apply skin texture, export as GLB.
+morph targets (N beta PCs), subdivide, apply skin texture, export as GLB.
 
 This replaces the MakeHuman model with an SMPL-based avatar that responds
 directly to beta parameters as morph targets.
 
+When --no-morphs is specified, exports a base mesh GLB without shape keys,
+suitable for use with the binary forward pass + buffer geometry update path.
+
 Usage:
   blender --background --python scripts/generate-smpl-model.py -- \
     --smpl-pkl "C:\path\to\basicmodel_m_lbs_10_207_0_v1.1.0.pkl" \
+    --subdivisions 2 \
+    --texture public/models/textures/young_lightskinned_male_diffuse.png
+
+  # Base mesh only (no morph targets):
+  blender --background --python scripts/generate-smpl-model.py -- \
+    --smpl-pkl "C:\path\to\basicmodel_m_lbs_10_207_0_v1.1.0.pkl" \
+    --no-morphs \
     --subdivisions 2 \
     --texture public/models/textures/young_lightskinned_male_diffuse.png
 
@@ -39,12 +49,14 @@ parser.add_argument("--subdivisions", type=int, default=2, help="Subdivision lev
 parser.add_argument("--texture", default=None, help="Path to skin texture image")
 parser.add_argument("--out", default=None, help="Output GLB path (default: public/models/human-smpl.glb)")
 parser.add_argument("--num-shapes", type=int, default=10, help="Number of shape PCs to export (default: 10)")
+parser.add_argument("--no-morphs", action="store_true", help="Skip shape key computation and export GLB without morph targets")
 args = parser.parse_args(argv)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SMPL_PKL = args.smpl_pkl if os.path.isabs(args.smpl_pkl) else os.path.join(BASE_DIR, args.smpl_pkl)
 SUBDIVISIONS = args.subdivisions
 NUM_SHAPES = args.num_shapes
+NO_MORPHS = args.no_morphs
 TEXTURE_PATH = args.texture
 if TEXTURE_PATH and not os.path.isabs(TEXTURE_PATH):
     TEXTURE_PATH = os.path.join(BASE_DIR, TEXTURE_PATH)
@@ -56,6 +68,7 @@ print("=" * 60)
 print(f"  SMPL pickle:   {SMPL_PKL}")
 print(f"  Subdivisions:  {SUBDIVISIONS}")
 print(f"  Shape PCs:     {NUM_SHAPES}")
+print(f"  No morphs:     {NO_MORPHS}")
 print(f"  Texture:       {TEXTURE_PATH or 'none'}")
 print(f"  Output:        {OUT_PATH}")
 
@@ -336,109 +349,149 @@ print(f"  Arms posed into A-pose ({ARM_ANGLE_DEG}° down) using SMPL skeleton")
 #      subdivide it, read the subdivided positions
 #   3. Create the final subdivided mesh with shape keys from the temp data
 
-print(f"\n[3/6] Computing smooth shape key displacements via subdivision...")
-t0 = time.time()
+if NO_MORPHS:
+    # Skip shape key computation — just subdivide the base mesh
+    print(f"\n[3/6] Skipping shape key computation (--no-morphs)")
+    print(f"\n[4/6] Subdividing base mesh without shape keys...")
 
-BETA_SCALE = 3.0  # morph influence 1.0 = beta value 3.0
-base_vert_count = len(v_template)
+    temp_obj = obj.copy()
+    temp_obj.data = obj.data.copy()
+    bpy.context.collection.objects.link(temp_obj)
+    bpy.context.view_layer.objects.active = temp_obj
+    temp_obj.select_set(True)
+    obj.select_set(False)
 
-# First, create a subdivided version of the base mesh to get the target vertex count
-# and the subdivided basis positions
-temp_obj = obj.copy()
-temp_obj.data = obj.data.copy()
-bpy.context.collection.objects.link(temp_obj)
-bpy.context.view_layer.objects.active = temp_obj
-temp_obj.select_set(True)
-obj.select_set(False)
+    sub = temp_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+    sub.levels = SUBDIVISIONS
+    sub.render_levels = SUBDIVISIONS
+    bpy.ops.object.modifier_apply(modifier=sub.name)
 
-sub = temp_obj.modifiers.new(name="Subdivision", type='SUBSURF')
-sub.levels = SUBDIVISIONS
-sub.render_levels = SUBDIVISIONS
-bpy.ops.object.modifier_apply(modifier=sub.name)
+    subdivided_vert_count = len(temp_obj.data.vertices)
+    print(f"  Subdivided: {subdivided_vert_count:,} vertices")
 
-subdivided_vert_count = len(temp_obj.data.vertices)
-basis_subdiv_coords = np.array([(v.co.x, v.co.y, v.co.z) for v in temp_obj.data.vertices])
-print(f"  Subdivided basis: {subdivided_vert_count:,} vertices")
+    # Remove the original low-res object, use the subdivided temp as our base
+    bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.data.meshes.remove(mesh)
 
-# Now compute subdivided positions for each shape key direction
-# by temporarily deforming the base mesh and subdividing
-shape_key_data = {}  # name → subdivided coords (N, 3)
+    obj = temp_obj
+    mesh = obj.data
+    obj.name = "SMPL_Body"
+    mesh.name = "SMPL_Body"
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
 
-for pc_idx in range(NUM_SHAPES):
-    for direction, sign, suffix in [(+1, -BETA_SCALE, ""), (-1, BETA_SCALE, "Neg")]:
-        name = f"Beta{pc_idx}{suffix}"
-        
-        # Create a temp mesh with the deformed positions
-        # NOTE: signs are flipped because SMPL's PCA convention has the opposite
-        # direction from what we want (positive beta = larger body).
-        deformed_verts = v_template + shapedirs[:, :, pc_idx] * sign
-        
-        temp2_mesh = bpy.data.meshes.new(f"temp_{name}")
-        temp2_obj = bpy.data.objects.new(f"temp_{name}", temp2_mesh)
-        bpy.context.collection.objects.link(temp2_obj)
-        
-        verts_list2 = [tuple(v) for v in deformed_verts]
-        faces_list2 = [tuple(f) for f in faces]
-        temp2_mesh.from_pydata(verts_list2, [], faces_list2)
-        temp2_mesh.update()
-        
-        # Subdivide
-        bpy.context.view_layer.objects.active = temp2_obj
-        temp2_obj.select_set(True)
-        sub2 = temp2_obj.modifiers.new(name="Subdivision", type='SUBSURF')
-        sub2.levels = SUBDIVISIONS
-        sub2.render_levels = SUBDIVISIONS
-        bpy.ops.object.modifier_apply(modifier=sub2.name)
-        
-        shape_key_data[name] = np.array([(v.co.x, v.co.y, v.co.z) for v in temp2_obj.data.vertices])
-        
-        # Clean up temp object
-        bpy.data.objects.remove(temp2_obj, do_unlink=True)
-        bpy.data.meshes.remove(temp2_mesh)
-        
-        disp = shape_key_data[name] - basis_subdiv_coords
-        disp_mag = np.linalg.norm(disp, axis=1)
-        print(f"  + {name}: max displacement {disp_mag.max()*1000:.1f}mm, "
-              f"mean {disp_mag.mean()*1000:.1f}mm")
+    # Fix normals and smooth shading on subdivided mesh
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.normals_make_consistent(inside=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.shade_smooth()
 
-print(f"  Shape key computation took {time.time() - t0:.1f}s")
+    print(f"  Final mesh: {subdivided_vert_count:,} vertices, {len(mesh.polygons):,} faces")
 
-# ─── Build final subdivided mesh with shape keys ─────────────────────────────
+else:
+    print(f"\n[3/6] Computing smooth shape key displacements via subdivision...")
+    t0 = time.time()
 
-print(f"\n[4/6] Building final mesh with {NUM_SHAPES * 2} smooth shape keys...")
+    BETA_SCALE = 3.0  # morph influence 1.0 = beta value 3.0
+    base_vert_count = len(v_template)
 
-# Remove the original low-res object, use the subdivided temp as our base
-bpy.data.objects.remove(obj, do_unlink=True)
-bpy.data.meshes.remove(mesh)
+    # First, create a subdivided version of the base mesh to get the target vertex count
+    # and the subdivided basis positions
+    temp_obj = obj.copy()
+    temp_obj.data = obj.data.copy()
+    bpy.context.collection.objects.link(temp_obj)
+    bpy.context.view_layer.objects.active = temp_obj
+    temp_obj.select_set(True)
+    obj.select_set(False)
 
-obj = temp_obj
-mesh = obj.data
-obj.name = "SMPL_Body"
-mesh.name = "SMPL_Body"
-bpy.context.view_layer.objects.active = obj
-obj.select_set(True)
+    sub = temp_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+    sub.levels = SUBDIVISIONS
+    sub.render_levels = SUBDIVISIONS
+    bpy.ops.object.modifier_apply(modifier=sub.name)
 
-# Fix normals and smooth shading on subdivided mesh
-bpy.ops.object.mode_set(mode='EDIT')
-bpy.ops.mesh.normals_make_consistent(inside=False)
-bpy.ops.object.mode_set(mode='OBJECT')
-bpy.ops.object.shade_smooth()
+    subdivided_vert_count = len(temp_obj.data.vertices)
+    basis_subdiv_coords = np.array([(v.co.x, v.co.y, v.co.z) for v in temp_obj.data.vertices])
+    print(f"  Subdivided basis: {subdivided_vert_count:,} vertices")
 
-# Add shape keys to the subdivided mesh
-obj.shape_key_add(name="Basis", from_mix=False)
+    # Now compute subdivided positions for each shape key direction
+    # by temporarily deforming the base mesh and subdividing
+    shape_key_data = {}  # name → subdivided coords (N, 3)
 
-for pc_idx in range(NUM_SHAPES):
-    for suffix in ["", "Neg"]:
-        name = f"Beta{pc_idx}{suffix}"
-        sk = obj.shape_key_add(name=name, from_mix=False)
-        coords = shape_key_data[name]
-        for vi in range(subdivided_vert_count):
-            sk.data[vi].co.x = coords[vi, 0]
-            sk.data[vi].co.y = coords[vi, 1]
-            sk.data[vi].co.z = coords[vi, 2]
+    for pc_idx in range(NUM_SHAPES):
+        for direction, sign, suffix in [(+1, -BETA_SCALE, ""), (-1, BETA_SCALE, "Neg")]:
+            name = f"Beta{pc_idx}{suffix}"
+            
+            # Create a temp mesh with the deformed positions
+            # NOTE: signs are flipped because SMPL's PCA convention has the opposite
+            # direction from what we want (positive beta = larger body).
+            deformed_verts = v_template + shapedirs[:, :, pc_idx] * sign
+            
+            temp2_mesh = bpy.data.meshes.new(f"temp_{name}")
+            temp2_obj = bpy.data.objects.new(f"temp_{name}", temp2_mesh)
+            bpy.context.collection.objects.link(temp2_obj)
+            
+            verts_list2 = [tuple(v) for v in deformed_verts]
+            faces_list2 = [tuple(f) for f in faces]
+            temp2_mesh.from_pydata(verts_list2, [], faces_list2)
+            temp2_mesh.update()
+            
+            # Subdivide
+            bpy.context.view_layer.objects.active = temp2_obj
+            temp2_obj.select_set(True)
+            sub2 = temp2_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+            sub2.levels = SUBDIVISIONS
+            sub2.render_levels = SUBDIVISIONS
+            bpy.ops.object.modifier_apply(modifier=sub2.name)
+            
+            shape_key_data[name] = np.array([(v.co.x, v.co.y, v.co.z) for v in temp2_obj.data.vertices])
+            
+            # Clean up temp object
+            bpy.data.objects.remove(temp2_obj, do_unlink=True)
+            bpy.data.meshes.remove(temp2_mesh)
+            
+            disp = shape_key_data[name] - basis_subdiv_coords
+            disp_mag = np.linalg.norm(disp, axis=1)
+            print(f"  + {name}: max displacement {disp_mag.max()*1000:.1f}mm, "
+                  f"mean {disp_mag.mean()*1000:.1f}mm")
 
-print(f"  Final mesh: {subdivided_vert_count:,} vertices, {len(mesh.polygons):,} faces")
-print(f"  Shape keys: {len(obj.data.shape_keys.key_blocks)}")
+    print(f"  Shape key computation took {time.time() - t0:.1f}s")
+
+    # ─── Build final subdivided mesh with shape keys ─────────────────────────────
+
+    print(f"\n[4/6] Building final mesh with {NUM_SHAPES * 2} smooth shape keys...")
+
+    # Remove the original low-res object, use the subdivided temp as our base
+    bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.data.meshes.remove(mesh)
+
+    obj = temp_obj
+    mesh = obj.data
+    obj.name = "SMPL_Body"
+    mesh.name = "SMPL_Body"
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    # Fix normals and smooth shading on subdivided mesh
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.normals_make_consistent(inside=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.shade_smooth()
+
+    # Add shape keys to the subdivided mesh
+    obj.shape_key_add(name="Basis", from_mix=False)
+
+    for pc_idx in range(NUM_SHAPES):
+        for suffix in ["", "Neg"]:
+            name = f"Beta{pc_idx}{suffix}"
+            sk = obj.shape_key_add(name=name, from_mix=False)
+            coords = shape_key_data[name]
+            for vi in range(subdivided_vert_count):
+                sk.data[vi].co.x = coords[vi, 0]
+                sk.data[vi].co.y = coords[vi, 1]
+                sk.data[vi].co.z = coords[vi, 2]
+
+    print(f"  Final mesh: {subdivided_vert_count:,} vertices, {len(mesh.polygons):,} faces")
+    print(f"  Shape keys: {len(obj.data.shape_keys.key_blocks)}")
 
 
 # ─── UV Unwrap + Texture ──────────────────────────────────────────────────────
@@ -509,8 +562,8 @@ bpy.ops.export_scene.gltf(
     export_format='GLB',
     use_selection=True,
     export_apply=False,
-    export_morph=True,
-    export_morph_normal=True,
+    export_morph=not NO_MORPHS,
+    export_morph_normal=not NO_MORPHS,
     export_morph_tangent=False,
     export_skins=False,
     export_animations=False,
@@ -530,7 +583,10 @@ print(f"  SMPL Model Generation Complete")
 print(f"{'=' * 60}")
 print(f"  Vertices:     {len(mesh.vertices):,}")
 print(f"  Faces:        {len(mesh.polygons):,}")
-print(f"  Shape keys:   {len(obj.data.shape_keys.key_blocks)} (Basis + {NUM_SHAPES} positive + {NUM_SHAPES} negative)")
+if NO_MORPHS:
+    print(f"  Shape keys:   None (--no-morphs)")
+else:
+    print(f"  Shape keys:   {len(obj.data.shape_keys.key_blocks)} (Basis + {NUM_SHAPES} positive + {NUM_SHAPES} negative)")
 print(f"  Subdivisions: {SUBDIVISIONS}")
 print(f"  File size:    {file_size / 1024 / 1024:.1f} MB")
 print(f"  Output:       {OUT_PATH}")

@@ -10,6 +10,8 @@ import { initializeEngine } from '../utils/engineInit';
 import { SmplEngine, MakeHumanEngine } from '../utils/bodyEngine';
 import type { BodyEngine } from '../utils/bodyEngine';
 import type { ExtractedMeasurements } from '../utils/measurementExtractor';
+import { loadSubdivisionMap, interpolateSubdivision } from '../utils/subdivisionMapper';
+import type { SubdivisionMap } from '../utils/subdivisionMapper';
 
 const damp = (cur: number, tgt: number, spd: number, dt: number) =>
   cur + (tgt - cur) * (1 - Math.exp(-spd * dt));
@@ -50,6 +52,11 @@ export function BodyModel() {
   // Ground tracking — base mesh min Y stored once on setup
   const baseMeshMinY = useRef(0);
 
+  // Buffer geometry update path — SMPL mode (replaces morph target driving)
+  const targetVerticesRef = useRef<Float32Array | null>(null);
+  const currentVerticesRef = useRef<Float32Array | null>(null);
+  const subdivMapRef = useRef<SubdivisionMap | null>(null);
+
   // SMPL refinement state
   const [bodyEngine, setBodyEngine] = useState<BodyEngine | null>(null);
   const smplMeasurementsRef = useRef<ExtractedMeasurements | null>(null);
@@ -83,6 +90,18 @@ export function BodyModel() {
     return () => { cancelled = true; };
   }, [bodyEngineType]);
 
+  // Load subdivision map on mount (8.2)
+  useEffect(() => {
+    loadSubdivisionMap('/models/smpl/smpl_subdiv_map.bin').then((map) => {
+      subdivMapRef.current = map;
+      if (map) {
+        console.log(`[BodyModel] Subdivision map loaded: ${map.subdivVertCount} vertices`);
+      }
+    }).catch(() => {
+      console.warn('[BodyModel] Subdivision map not available, using base mesh');
+    });
+  }, []);
+
   // Run SMPL refinement when inputs change (if SMPL engine available)
   useEffect(() => {
     if (!bodyEngine) {
@@ -98,6 +117,27 @@ export function BodyModel() {
     if (bodyEngine instanceof SmplEngine) {
       smplMeasurementsRef.current = bodyEngine.lastMeasurements;
       useBodyStore.getState().setSmplMeasurements(bodyEngine.lastMeasurements);
+
+      // Compute target vertices for buffer geometry update path
+      const baseVerts = bodyEngine.getVertexPositions();
+      const baseFaces = bodyEngine.getFaces() as Uint16Array;
+      const map = subdivMapRef.current;
+
+      if (map) {
+        // Interpolate base vertices to subdivided mesh
+        if (!targetVerticesRef.current || targetVerticesRef.current.length !== map.subdivVertCount * 3) {
+          targetVerticesRef.current = new Float32Array(map.subdivVertCount * 3);
+          currentVerticesRef.current = new Float32Array(map.subdivVertCount * 3);
+        }
+        interpolateSubdivision(baseVerts, baseFaces, map, targetVerticesRef.current);
+      } else {
+        // Fallback: use 6,890-vertex base mesh directly
+        if (!targetVerticesRef.current || targetVerticesRef.current.length !== baseVerts.length) {
+          targetVerticesRef.current = new Float32Array(baseVerts.length);
+          currentVerticesRef.current = new Float32Array(baseVerts.length);
+        }
+        targetVerticesRef.current.set(baseVerts);
+      }
     } else {
       smplMeasurementsRef.current = null;
       useBodyStore.getState().setSmplMeasurements(null);
@@ -187,37 +227,32 @@ export function BodyModel() {
     return () => { groupRef.current?.remove(clonedScene); };
   }, [clonedScene]);
 
-  // Morph influences — SMPL betas or MakeHuman morphs depending on engine
+  // Morph influences and scaling — SMPL uses buffer geometry path, MakeHuman uses morph targets
   useEffect(() => {
     const mesh = meshRef.current;
-    if (!mesh?.morphTargetDictionary) return;
 
     if (bodyEngineType === 'smpl-refined' && bodyEngine instanceof SmplEngine) {
-      // SMPL mode: drive Beta0-Beta9 morph targets directly from regressor
-      const betas = bodyEngine.currentBetas;
-      morphNamesRef.current.forEach((name, idx) => {
-        const match = name.match(/^Beta(\d+)(Neg)?$/);
-        if (!match) { targetInfluences.current[idx] = 0; return; }
-
-        const betaIdx = parseInt(match[1], 10);
-        const isNeg = match[2] === 'Neg';
-        const betaVal = betaIdx < betas.length ? betas[betaIdx] : 0;
-
-        if (isNeg) {
-          targetInfluences.current[idx] = Math.max(0, Math.min(1, -betaVal / 3.0));
-        } else {
-          targetInfluences.current[idx] = Math.max(0, Math.min(1, betaVal / 3.0));
-        }
-      });
-
-      // SMPL: use group-level height scaling (same as MakeHuman) for clean height changes.
-      // Beta-based height (β0) changes proportions unnaturally.
+      // SMPL mode: buffer geometry update path — no morph target driving.
+      // Height/width scaling still applies at group level.
       const heightRatio = inputs.heightCm / 175;
       const widthCompensation = 1 + (1 - heightRatio) * 0.15; // less aggressive than MakeHuman
       targetHeightScale.current = heightRatio;
       targetWidthScale.current = widthCompensation;
+
+      // Fallback: if subdivision map not loaded, replace mesh geometry with base mesh
+      if (!subdivMapRef.current && bodyEngine && mesh) {
+        const baseVerts = bodyEngine.getVertexPositions();
+        const baseFaces = bodyEngine.getFaces() as Uint16Array;
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(baseVerts), 3));
+        geo.setIndex(new THREE.BufferAttribute(new Uint16Array(baseFaces), 1));
+        geo.computeVertexNormals();
+        mesh.geometry = geo;
+      }
     } else {
-      // MakeHuman mode: use existing morph mapper
+      // MakeHuman mode: use existing morph mapper (unchanged)
+      if (!mesh?.morphTargetDictionary) return;
+
       const smplMeas = smplMeasurementsRef.current;
       const morphs = morphOverrides ?? inputsToMorphs(inputs, smplMeas);
       morphNamesRef.current.forEach((name, i) => {
@@ -323,9 +358,10 @@ export function BodyModel() {
   // Animation
   useFrame((_, delta) => {
     const mesh = meshRef.current;
-    if (!mesh?.morphTargetInfluences) return;
+    if (!mesh) return;
     const dt = Math.min(delta, 0.05);
 
+    // Height/width scaling (shared by both engine modes)
     currentHeightScale.current = damp(currentHeightScale.current, targetHeightScale.current, SMOOTH, dt);
     currentWidthScale.current = damp(currentWidthScale.current, targetWidthScale.current, SMOOTH, dt);
     groupRef.current.scale.set(currentWidthScale.current, currentHeightScale.current, currentWidthScale.current);
@@ -335,12 +371,29 @@ export function BodyModel() {
     // When scaleY != 1, that offset gets scaled too, but so do the vertices,
     // so feet remain at world Y=0. No per-frame correction needed.
 
-    for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
-      const cur = currentInfluences.current[i] ?? 0;
-      const tgt = targetInfluences.current[i] ?? 0;
-      const next = damp(cur, tgt, SMOOTH, dt);
-      currentInfluences.current[i] = next;
-      mesh.morphTargetInfluences[i] = Math.min(next, 1.0);
+    if (bodyEngineType === 'smpl-refined' && targetVerticesRef.current && currentVerticesRef.current) {
+      // SMPL mode: damped buffer geometry interpolation
+      const cur = currentVerticesRef.current;
+      const tgt = targetVerticesRef.current;
+      const factor = 1 - Math.exp(-SMOOTH * dt);
+      for (let i = 0; i < cur.length; i++) {
+        cur[i] += (tgt[i] - cur[i]) * factor;
+      }
+
+      // Write damped vertices to geometry buffer
+      const posAttr = mesh.geometry.attributes.position;
+      (posAttr.array as Float32Array).set(cur);
+      posAttr.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+    } else if (mesh.morphTargetInfluences) {
+      // MakeHuman mode: morph target animation (unchanged)
+      for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
+        const cur = currentInfluences.current[i] ?? 0;
+        const tgt = targetInfluences.current[i] ?? 0;
+        const next = damp(cur, tgt, SMOOTH, dt);
+        currentInfluences.current[i] = next;
+        mesh.morphTargetInfluences[i] = Math.min(next, 1.0);
+      }
     }
 
     // Expose current morph influences to store for GarmentShell sync

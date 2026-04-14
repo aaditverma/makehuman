@@ -13,7 +13,7 @@
  *
  * Uses fast-check for property-based testing.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import fc from 'fast-check';
@@ -30,6 +30,9 @@ import {
   loadCalibratedCoefficients,
   applyCalibratedCoefficients,
   _resetCalibratedCoefficients,
+  setActiveShapeCount,
+  getActiveShapeCount,
+  extendVector,
 } from '../smplRegressor';
 import type { RegressorInputs, BodyComposition, CalibratedCoefficients } from '../smplRegressor';
 import type { BodyType } from '../../stores/bodyStore';
@@ -1036,6 +1039,212 @@ describe('Property 9 (design): Coefficient table parse-serialize round-trip', ()
         }
       }),
       { numRuns: 50 },
+    );
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/*  Property 4 (design): Regressor N-Length Output — Tasks 4.1–4.3     */
+/* ------------------------------------------------------------------ */
+
+describe('Property 4: Regressor output length matches activeShapeCount', () => {
+  /**
+   * **Validates: Requirements 4.1, 4.3**
+   *
+   * For any valid user inputs and activeShapeCount N in [10, 50],
+   * computeSmplBetas() returns a Float64Array of length exactly N,
+   * where every element is finite and in [-3, 3].
+   */
+
+  afterEach(() => {
+    // Restore default activeShapeCount
+    setActiveShapeCount(10);
+  });
+
+  it('computeSmplBetas returns Float64Array of length N with all finite values in [-3, 3]', () => {
+    const inputsArb = fc.record({
+      heightCm: fc.double({ min: 140, max: 210, noNaN: true, noDefaultInfinity: true }),
+      weightKg: fc.double({ min: 40, max: 150, noNaN: true, noDefaultInfinity: true }),
+      age: fc.integer({ min: 18, max: 80 }),
+      gender: fc.constantFrom('male' as const, 'female' as const),
+      bodyComposition: fc.constantFrom('athletic' as const, 'average' as const, 'heavy' as const),
+    });
+
+    const shapeCountArb = fc.integer({ min: 10, max: 50 });
+
+    fc.assert(
+      fc.property(inputsArb, shapeCountArb, (inputs, N) => {
+        setActiveShapeCount(N);
+
+        const betas = computeSmplBetas(inputs);
+
+        expect(betas).toBeInstanceOf(Float64Array);
+        expect(betas.length).toBe(N);
+
+        for (let i = 0; i < N; i++) {
+          expect(Number.isFinite(betas[i])).toBe(true);
+          expect(betas[i]).toBeGreaterThanOrEqual(-3);
+          expect(betas[i]).toBeLessThanOrEqual(3);
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/*  Property 5 (design): Zero-Padding Beyond Trained Range — Task 4.2  */
+/* ------------------------------------------------------------------ */
+
+describe('Property 5: Zero-padding beyond trained range', () => {
+  /**
+   * **Validates: Requirements 4.2, 10.3**
+   *
+   * When activeShapeCount > 10 and regression covers 10 betas,
+   * betas[10..N-1] are exactly 0.0 before and after preset/composition
+   * offsets (since offsets are also only 10 elements).
+   */
+
+  afterEach(() => {
+    setActiveShapeCount(10);
+  });
+
+  it('betas[10..N-1] are exactly 0.0 for activeShapeCount > 10', () => {
+    const inputsArb = fc.record({
+      heightCm: fc.double({ min: 140, max: 210, noNaN: true, noDefaultInfinity: true }),
+      weightKg: fc.double({ min: 40, max: 150, noNaN: true, noDefaultInfinity: true }),
+      age: fc.integer({ min: 18, max: 80 }),
+      gender: fc.constantFrom('male' as const, 'female' as const),
+      bodyType: fc.constantFrom(
+        'slim' as const, 'average' as const, 'athletic' as const,
+        'curvy' as const, 'heavy' as const,
+      ),
+      bodyComposition: fc.constantFrom('athletic' as const, 'average' as const, 'heavy' as const),
+    });
+
+    const shapeCountArb = fc.integer({ min: 11, max: 50 });
+
+    fc.assert(
+      fc.property(inputsArb, shapeCountArb, (inputs, N) => {
+        setActiveShapeCount(N);
+
+        const betas = computeSmplBetas(inputs);
+
+        expect(betas.length).toBe(N);
+
+        // Indices 10..N-1 should be exactly 0.0
+        for (let i = 10; i < N; i++) {
+          expect(betas[i]).toBe(0.0);
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/*  Property 10 (design): Preset/Composition Extension — Task 4.3      */
+/* ------------------------------------------------------------------ */
+
+describe('Property 10: Preset/composition extension preserves first 10 values', () => {
+  /**
+   * **Validates: Requirements 4.4, 4.5**
+   *
+   * For all body types and compositions, extending the preset offset
+   * or composition bias vector from length 10 to length N preserves
+   * the original 10 values exactly, and all values at indices 10..N-1
+   * are 0.0.
+   */
+  it('extendVector preserves first 10 values and zero-pads the rest', () => {
+    const targetLengthArb = fc.integer({ min: 11, max: 50 });
+    const valuesArb = fc.array(
+      fc.double({ min: -3, max: 3, noNaN: true, noDefaultInfinity: true }),
+      { minLength: 10, maxLength: 10 },
+    );
+
+    fc.assert(
+      fc.property(valuesArb, targetLengthArb, (values, targetLength) => {
+        const original = new Float64Array(values);
+        const extended = extendVector(original, targetLength);
+
+        expect(extended.length).toBe(targetLength);
+
+        // First 10 values preserved exactly
+        for (let i = 0; i < 10; i++) {
+          expect(extended[i]).toBe(original[i]);
+        }
+
+        // Indices 10..N-1 are 0.0
+        for (let i = 10; i < targetLength; i++) {
+          expect(extended[i]).toBe(0.0);
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it('preset offsets only modify first 10 betas of N-length vector', () => {
+    const shapeCountArb = fc.integer({ min: 11, max: 50 });
+    const presetArb = fc.constantFrom(
+      'slim' as const, 'athletic' as const, 'curvy' as const, 'heavy' as const,
+    );
+
+    fc.assert(
+      fc.property(shapeCountArb, presetArb, (N, preset) => {
+        // Create N-length betas with known values in first 10
+        const betas = new Float64Array(N);
+        for (let i = 0; i < 10; i++) {
+          betas[i] = 0.5; // known baseline
+        }
+
+        applyPresetOffsets(betas, preset);
+
+        const offsets = SMPL_PRESET_OFFSETS[preset];
+
+        // First 10 should be baseline + offset
+        for (let i = 0; i < 10; i++) {
+          expect(betas[i]).toBeCloseTo(0.5 + offsets[i], 10);
+        }
+
+        // Indices 10..N-1 should remain 0.0
+        for (let i = 10; i < N; i++) {
+          expect(betas[i]).toBe(0.0);
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it('composition bias only modifies first 10 betas of N-length vector', () => {
+    const shapeCountArb = fc.integer({ min: 11, max: 50 });
+    const compositionArb = fc.constantFrom('athletic' as const, 'heavy' as const);
+
+    fc.assert(
+      fc.property(shapeCountArb, compositionArb, (N, composition) => {
+        // Create N-length betas with known values in first 10
+        const betas = new Float64Array(N);
+        for (let i = 0; i < 10; i++) {
+          betas[i] = 0.5;
+        }
+
+        applyCompositionBias(betas, composition);
+
+        const bias = COMPOSITION_BIAS[composition];
+
+        // First 10 should be baseline + bias
+        for (let i = 0; i < 10; i++) {
+          expect(betas[i]).toBeCloseTo(0.5 + bias[i], 10);
+        }
+
+        // Indices 10..N-1 should remain 0.0
+        for (let i = 10; i < N; i++) {
+          expect(betas[i]).toBe(0.0);
+        }
+      }),
+      { numRuns: 100 },
     );
   });
 });

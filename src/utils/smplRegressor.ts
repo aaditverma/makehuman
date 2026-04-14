@@ -16,6 +16,23 @@ import type { BodyType } from '../stores/bodyStore';
 import type { SmplModelData } from './smplForwardPass';
 
 /* ------------------------------------------------------------------ */
+/*  Active Shape Count — configurable N for the loaded model           */
+/* ------------------------------------------------------------------ */
+
+/** Module-level: the active model's shape count (default 10 for backward compat) */
+let activeShapeCount: number = 10;
+
+/** Set the active shape count (called when SMPL model is loaded) */
+export function setActiveShapeCount(n: number): void {
+  activeShapeCount = n;
+}
+
+/** Get the active shape count */
+export function getActiveShapeCount(): number {
+  return activeShapeCount;
+}
+
+/* ------------------------------------------------------------------ */
 /*  ANSUR II Lookup Table — statistical measurement predictions        */
 /* ------------------------------------------------------------------ */
 
@@ -226,12 +243,25 @@ export const SMPL_PRESET_OFFSETS: Record<BodyType, Float64Array> = {
 };
 
 /**
+ * Extend a Float64Array to a target length by zero-padding.
+ * If the vector is already at or beyond the target length, returns it as-is.
+ */
+export function extendVector(vec: Float64Array, targetLength: number): Float64Array {
+  if (vec.length >= targetLength) return vec;
+  const extended = new Float64Array(targetLength);
+  extended.set(vec);
+  return extended;
+}
+
+/**
  * Apply body type preset offsets to a beta vector (element-wise addition).
  * Modifies the betas array in place and returns it.
+ * Zero-extends the offset vector if betas is longer than the offset.
  */
 export function applyPresetOffsets(betas: Float64Array, bodyType: BodyType): Float64Array {
   const offsets = SMPL_PRESET_OFFSETS[bodyType];
-  for (let i = 0; i < betas.length; i++) {
+  const len = Math.min(betas.length, offsets.length);
+  for (let i = 0; i < len; i++) {
     betas[i] += offsets[i];
   }
   return betas;
@@ -247,10 +277,12 @@ export const COMPOSITION_BIAS: Record<BodyComposition, Float64Array> = {
 /**
  * Apply body composition bias to a beta vector (element-wise addition).
  * Modifies the betas array in place and returns it.
+ * Zero-extends the bias vector if betas is longer than the bias.
  */
 export function applyCompositionBias(betas: Float64Array, composition: BodyComposition): Float64Array {
   const bias = COMPOSITION_BIAS[composition];
-  for (let i = 0; i < betas.length; i++) {
+  const len = Math.min(betas.length, bias.length);
+  for (let i = 0; i < len; i++) {
     betas[i] += bias[i];
   }
   return betas;
@@ -661,6 +693,8 @@ function regress4Input(inputs: RegressorInputs): Float64Array {
  *   β9: leg thickness
  */
 export function lookupRegress(inputs: RegressorInputs): Float64Array {
+  const N = activeShapeCount;
+
   /* ---- Calibrated regression path ---- */
   if (calibratedCoeffs != null) {
     // Count how many custom measurements are provided
@@ -671,13 +705,20 @@ export function lookupRegress(inputs: RegressorInputs): Float64Array {
     const customCount = +hasChest + +hasWaist + +hasHip + +hasInseam;
 
     // Route: 8-input (any measurements) or 4-input (no measurements)
+    let baseBetas: Float64Array;
     if (customCount > 0 && calibratedCoeffs.regression8 != null) {
       const imputed = imputeMissingMeasurements(inputs);
-      return regress8Input(inputs, imputed);
+      baseBetas = regress8Input(inputs, imputed);
+    } else {
+      // 4-input path (existing calibrated code, unchanged)
+      baseBetas = regress4Input(inputs);
     }
 
-    // 4-input path (existing calibrated code, unchanged)
-    return regress4Input(inputs);
+    // Extend to N (copies first 10, rest are 0.0)
+    if (N === baseBetas.length) return baseBetas;
+    const extended = new Float64Array(N);
+    extended.set(baseBetas.subarray(0, Math.min(baseBetas.length, N)));
+    return extended;
   }
 
   /* ---- Heuristic fallback path (existing code) ---- */
@@ -754,6 +795,13 @@ export function lookupRegress(inputs: RegressorInputs): Float64Array {
     betas[i] = clamp(betas[i], -3, 3);
   }
 
+  // Extend to N if activeShapeCount > 10 (rest are 0.0)
+  if (N > 10) {
+    const extended = new Float64Array(N);
+    extended.set(betas);
+    return extended;
+  }
+
   return betas;
 }
 
@@ -828,7 +876,7 @@ export function computeSmplBetas(inputs: PipelineInputs, model?: SmplModelData |
   }
 
   // Step 5: final clamp to [-3, 3]
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < betas.length; i++) {
     betas[i] = clamp(betas[i], -3, 3);
   }
 

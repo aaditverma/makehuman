@@ -17,13 +17,23 @@ Usage:
   python scripts/export-smpl-assets.py --smpl-pkl path/to/SMPL_NEUTRAL.pkl --out public/models/smpl/
   python scripts/export-smpl-assets.py --smpl-pkl path/to/SMPL_NEUTRAL.pkl --makehuman-glb public/models/human-male.glb --out public/models/smpl/
 
+Asset regeneration for different PC counts:
+  # Default 10 PCs (backward compatible):
+  python scripts/export-smpl-assets.py --smpl-pkl path/to/SMPL_NEUTRAL.pkl --out public/models/smpl/
+
+  # 20 PCs (finer body shape detail):
+  python scripts/export-smpl-assets.py --smpl-pkl path/to/SMPL_NEUTRAL.pkl --num-shapes 20 --out public/models/smpl/
+
+  # 50 PCs (maximum detail):
+  python scripts/export-smpl-assets.py --smpl-pkl path/to/SMPL_NEUTRAL.pkl --num-shapes 50 --out public/models/smpl/
+
 Binary format for smpl_model.bin (must match loadSmplModel() in smplForwardPass.ts):
   Header (16 bytes):
     magic:         uint32  — 0x534D504C ("SMPL")
-    version:       uint16  — 1
+    version:       uint16  — 2
     vertexCount:   uint16  — 6890
     faceCount:     uint16  — 13776
-    shapeCount:    uint16  — 10
+    shapeCount:    uint16  — N (configurable via --num-shapes)
     landmarkCount: uint16
     reserved:      uint16  — 0
   Template vertices:    Float32[vertexCount × 3]
@@ -49,10 +59,12 @@ import numpy as np
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 SMPL_MAGIC = 0x534D504C       # "SMPL" in ASCII
-SMPL_VERSION = 1
+SMPL_VERSION = 2
 EXPECTED_VERTEX_COUNT = 6890
 EXPECTED_FACE_COUNT = 13776
-EXPECTED_SHAPE_COUNT = 10
+DEFAULT_SHAPE_COUNT = 10      # default when --num-shapes not specified
+MIN_SHAPE_COUNT = 10
+MAX_SHAPE_COUNT = 50
 EXPECTED_JOINT_COUNT = 24
 
 # SMPL vertex indices for anatomical landmarks.
@@ -107,6 +119,10 @@ def parse_args():
     parser.add_argument(
         "--skip-correspondence", action="store_true",
         help="Skip SMPL-to-MakeHuman correspondence map"
+    )
+    parser.add_argument(
+        "--num-shapes", type=int, default=DEFAULT_SHAPE_COUNT,
+        help=f"Number of shape PCs to export (default: {DEFAULT_SHAPE_COUNT}, range {MIN_SHAPE_COUNT}–{MAX_SHAPE_COUNT})"
     )
     return parser.parse_args()
 
@@ -203,7 +219,7 @@ def load_smpl_pkl(pkl_path: str) -> dict:
     return data
 
 
-def validate_smpl_data(data: dict):
+def validate_smpl_data(data: dict, num_shapes: int = DEFAULT_SHAPE_COUNT):
     """Validate SMPL model shapes before export."""
     errors = []
 
@@ -215,14 +231,14 @@ def validate_smpl_data(data: dict):
 
     shapedirs = np.array(data["shapedirs"])
     if shapedirs.ndim == 3:
-        # shapedirs is (6890, 3, N) where N >= 10
+        # shapedirs is (6890, 3, N) where N >= num_shapes
         if shapedirs.shape[0] != EXPECTED_VERTEX_COUNT or shapedirs.shape[1] != 3:
             errors.append(
                 f"shapedirs shape {shapedirs.shape}, expected ({EXPECTED_VERTEX_COUNT}, 3, N)"
             )
-        if shapedirs.shape[2] < EXPECTED_SHAPE_COUNT:
+        if shapedirs.shape[2] < num_shapes:
             errors.append(
-                f"shapedirs has {shapedirs.shape[2]} components, need at least {EXPECTED_SHAPE_COUNT}"
+                f"shapedirs has {shapedirs.shape[2]} components, need at least {num_shapes}"
             )
     else:
         errors.append(f"shapedirs has {shapedirs.ndim} dimensions, expected 3")
@@ -297,26 +313,27 @@ def transform_to_yup(vertices: np.ndarray) -> np.ndarray:
 
 # ─── Binary Export: smpl_model.bin ────────────────────────────────────────────
 
-def export_smpl_model_bin(data: dict, landmarks: dict, out_path: str):
+def export_smpl_model_bin(data: dict, landmarks: dict, out_path: str, num_shapes: int = DEFAULT_SHAPE_COUNT):
     """Export SMPL model to binary format matching smplForwardPass.ts loader.
 
     Binary layout:
       Header (16 bytes):
         magic:         uint32  — 0x534D504C
-        version:       uint16  — 1
+        version:       uint16  — 2
         vertexCount:   uint16  — 6890
         faceCount:     uint16  — 13776
-        shapeCount:    uint16  — 10
+        shapeCount:    uint16  — N (num_shapes)
         landmarkCount: uint16
         reserved:      uint16  — 0
       Template vertices:    Float32[6890 × 3]
-      Shape blend shapes:   Float32[10 × 6890 × 3]
+      Shape blend shapes:   Float32[N × 6890 × 3]
       Face indices:         Uint16[13776 × 3]
       Joint regressor:      Float32[24 × 6890]
       Landmark pairs:       Uint16[landmarkCount × 2]
       Landmark name strings: null-terminated UTF-8
     """
     print(f"\n[export] Writing smpl_model.bin → {out_path}")
+    print(f"  Exporting {num_shapes} shape blend shapes")
 
     # Prepare arrays
     v_template = np.array(data["v_template"], dtype=np.float64)
@@ -324,23 +341,22 @@ def export_smpl_model_bin(data: dict, landmarks: dict, out_path: str):
     v_template_f32 = v_template.astype(np.float32).flatten()
 
     shapedirs = np.array(data["shapedirs"])  # (6890, 3, N)
-    # Take first 10 components, reshape to (10, 6890, 3)
-    shapes_10 = shapedirs[:, :, :EXPECTED_SHAPE_COUNT]  # (6890, 3, 10)
-    shapes_10 = np.transpose(shapes_10, (2, 0, 1))       # (10, 6890, 3)
+    # Take first num_shapes components, reshape to (num_shapes, 6890, 3)
+    shapes_n = shapedirs[:, :, :num_shapes]  # (6890, 3, num_shapes)
+    shapes_n = np.transpose(shapes_n, (2, 0, 1))  # (num_shapes, 6890, 3)
 
-    # Apply same coordinate transform to blend shapes
-    y_range = v_template[:, 1].max() - v_template[:, 1].min()
+    # Apply same coordinate transform to all N blend shapes
     z_range_orig = np.array(data["v_template"])[:, 2].max() - np.array(data["v_template"])[:, 2].min()
     y_range_orig = np.array(data["v_template"])[:, 1].max() - np.array(data["v_template"])[:, 1].min()
 
     if z_range_orig > y_range_orig * 1.5:
         # Same rotation for blend shapes: (dx, dy, dz) → (dx, -dz, dy)
-        rotated_shapes = shapes_10.copy()
-        rotated_shapes[:, :, 1] = -shapes_10[:, :, 2]
-        rotated_shapes[:, :, 2] = shapes_10[:, :, 1]
-        shapes_10 = rotated_shapes
+        rotated_shapes = shapes_n.copy()
+        rotated_shapes[:, :, 1] = -shapes_n[:, :, 2]
+        rotated_shapes[:, :, 2] = shapes_n[:, :, 1]
+        shapes_n = rotated_shapes
 
-    shapes_f32 = shapes_10.astype(np.float32).flatten()
+    shapes_f32 = shapes_n.astype(np.float32).flatten()
 
     faces = np.array(data["f"], dtype=np.int32)
     if faces.max() > 65535:
@@ -387,7 +403,7 @@ def export_smpl_model_bin(data: dict, landmarks: dict, out_path: str):
                    faces_bytes + joint_bytes + landmark_pair_bytes + string_bytes)
 
     print(f"  Template vertices:  {template_bytes:>10,} bytes ({EXPECTED_VERTEX_COUNT} × 3 float32)")
-    print(f"  Shape blend shapes: {shapes_bytes:>10,} bytes ({EXPECTED_SHAPE_COUNT} × {EXPECTED_VERTEX_COUNT} × 3 float32)")
+    print(f"  Shape blend shapes: {shapes_bytes:>10,} bytes ({num_shapes} × {EXPECTED_VERTEX_COUNT} × 3 float32)")
     print(f"  Face indices:       {faces_bytes:>10,} bytes ({EXPECTED_FACE_COUNT} × 3 uint16)")
     print(f"  Joint regressor:    {joint_bytes:>10,} bytes ({EXPECTED_JOINT_COUNT} × {EXPECTED_VERTEX_COUNT} float32)")
     print(f"  Landmark pairs:     {landmark_pair_bytes:>10,} bytes ({landmark_count} × 2 uint16)")
@@ -401,7 +417,7 @@ def export_smpl_model_bin(data: dict, landmarks: dict, out_path: str):
         f.write(struct.pack("<H", SMPL_VERSION))              # version uint16
         f.write(struct.pack("<H", EXPECTED_VERTEX_COUNT))     # vertexCount uint16
         f.write(struct.pack("<H", EXPECTED_FACE_COUNT))       # faceCount uint16
-        f.write(struct.pack("<H", EXPECTED_SHAPE_COUNT))      # shapeCount uint16
+        f.write(struct.pack("<H", num_shapes))                # shapeCount uint16
         f.write(struct.pack("<H", landmark_count))            # landmarkCount uint16
         f.write(struct.pack("<H", 0))                         # reserved uint16
 
@@ -761,10 +777,25 @@ def main():
     print("=" * 60)
     print(f"  SMPL pickle: {args.smpl_pkl}")
     print(f"  Output dir:  {out_dir}")
+    print(f"  Num shapes:  {args.num_shapes}")
+
+    # Validate --num-shapes range
+    num_shapes = args.num_shapes
+    if num_shapes < MIN_SHAPE_COUNT or num_shapes > MAX_SHAPE_COUNT:
+        print(f"ERROR: --num-shapes must be between {MIN_SHAPE_COUNT} and {MAX_SHAPE_COUNT}, got {num_shapes}")
+        sys.exit(1)
 
     # Load and validate SMPL model
     smpl_data = load_smpl_pkl(args.smpl_pkl)
-    validate_smpl_data(smpl_data)
+    validate_smpl_data(smpl_data, num_shapes)
+
+    # Check that pickle has enough shape directions
+    shapedirs = np.array(smpl_data["shapedirs"])
+    available_shapes = shapedirs.shape[2] if shapedirs.ndim == 3 else 0
+    if available_shapes < num_shapes:
+        print(f"ERROR: SMPL pickle has {available_shapes} shape directions, "
+              f"but --num-shapes={num_shapes} was requested")
+        sys.exit(1)
 
     # Load custom landmarks if provided, otherwise use built-in
     if args.landmarks_json:
@@ -776,7 +807,7 @@ def main():
 
     # 1. Export smpl_model.bin
     bin_path = os.path.join(out_dir, "smpl_model.bin")
-    export_smpl_model_bin(smpl_data, landmarks, bin_path)
+    export_smpl_model_bin(smpl_data, landmarks, bin_path, num_shapes)
 
     # 2. Export smpl_regressor.onnx
     if not args.skip_onnx:

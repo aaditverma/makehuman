@@ -11,6 +11,7 @@ containing:
 
 Usage:
     python scripts/train-beta-coefficients.py
+    python scripts/train-beta-coefficients.py --num-betas 20
 """
 
 import os
@@ -18,6 +19,7 @@ import sys
 import json
 import logging
 import datetime
+import argparse
 import numpy as np
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import cross_val_score
@@ -29,7 +31,13 @@ OUT_DIR = os.path.join(BASE_DIR, "src", "data")
 DATASET_PATH = os.path.join(DATA_DIR, "calibration_dataset.json")
 OUT_PATH = os.path.join(OUT_DIR, "calibrated_coefficients.json")
 
-NUM_BETAS = 10
+# Parse CLI arguments
+_parser = argparse.ArgumentParser(description="Train SMPL beta regression coefficients")
+_parser.add_argument("--num-betas", type=int, default=10,
+                     help="Number of beta components to train (default: 10)")
+_cli_args = _parser.parse_args()
+
+NUM_BETAS = _cli_args.num_betas
 
 # Normalization parameters — must match TypeScript smplRegressor.ts
 NORMALIZATION = {
@@ -111,7 +119,13 @@ def compute_features(entry: dict) -> np.ndarray:
 def build_feature_matrix(data: list[dict]) -> tuple[np.ndarray, np.ndarray]:
     """Build feature matrix X and target matrix Y from dataset."""
     X = np.array([compute_features(e) for e in data])
-    Y = np.array([e["betas"] for e in data])
+    raw_Y = np.array([e["betas"] for e in data])
+    # Pad or truncate to NUM_BETAS columns
+    if raw_Y.shape[1] < NUM_BETAS:
+        Y = np.zeros((raw_Y.shape[0], NUM_BETAS))
+        Y[:, :raw_Y.shape[1]] = raw_Y
+    else:
+        Y = raw_Y[:, :NUM_BETAS]
     return X, Y
 
 
@@ -151,8 +165,34 @@ def compute_features_8input(entry: dict) -> np.ndarray:
 def build_feature_matrix_8input(data: list[dict]) -> tuple[np.ndarray, np.ndarray]:
     """Build 11-column feature matrix X and target matrix Y for the 8-input model."""
     X = np.array([compute_features_8input(e) for e in data])
-    Y = np.array([e["betas"] for e in data])
+    raw_Y = np.array([e["betas"] for e in data])
+    # Pad or truncate to NUM_BETAS columns
+    if raw_Y.shape[1] < NUM_BETAS:
+        Y = np.zeros((raw_Y.shape[0], NUM_BETAS))
+        Y[:, :raw_Y.shape[1]] = raw_Y
+    else:
+        Y = raw_Y[:, :NUM_BETAS]
     return X, Y
+
+
+def _pad_betas(betas_list: list, target_len: int = None) -> np.ndarray:
+    """Pad a single betas list to target_len (default NUM_BETAS), zero-filling beyond."""
+    if target_len is None:
+        target_len = NUM_BETAS
+    arr = np.array(betas_list, dtype=np.float64)
+    if len(arr) >= target_len:
+        return arr[:target_len]
+    padded = np.zeros(target_len, dtype=np.float64)
+    padded[:len(arr)] = arr
+    return padded
+
+
+def _pad_betas_mean(betas_lists: list, target_len: int = None) -> np.ndarray:
+    """Compute mean of betas lists, padding each to target_len first."""
+    if target_len is None:
+        target_len = NUM_BETAS
+    padded = np.array([_pad_betas(b, target_len) for b in betas_lists])
+    return padded.mean(axis=0)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -303,12 +343,12 @@ def compute_preset_offsets(data: list[dict]) -> dict:
 
     # Average baseline: BMI 20–25
     avg_entries = [e for e in entries_with_stats if 20 <= e["bmi"] <= 25]
-    avg_betas = np.mean([e["betas"] for e in avg_entries], axis=0)
+    avg_betas = _pad_betas_mean([e["betas"] for e in avg_entries])
     log.info(f"  Average baseline: {len(avg_entries)} entries")
 
     # Slim: BMI < 20
     slim_entries = [e for e in entries_with_stats if e["bmi"] < 20]
-    slim_betas = np.mean([e["betas"] for e in slim_entries], axis=0) if slim_entries else avg_betas
+    slim_betas = _pad_betas_mean([e["betas"] for e in slim_entries]) if slim_entries else avg_betas
     log.info(f"  Slim: {len(slim_entries)} entries")
 
     # Athletic: top 20% shoulder-to-waist ratio per gender
@@ -318,12 +358,12 @@ def compute_preset_offsets(data: list[dict]) -> dict:
         sw_ratios = [e["sw_ratio"] for e in g_entries]
         threshold = np.percentile(sw_ratios, 80)
         athletic_entries.extend([e for e in g_entries if e["sw_ratio"] >= threshold])
-    athletic_betas = np.mean([e["betas"] for e in athletic_entries], axis=0)
+    athletic_betas = _pad_betas_mean([e["betas"] for e in athletic_entries])
     log.info(f"  Athletic: {len(athletic_entries)} entries")
 
     # Heavy: BMI > 30
     heavy_entries = [e for e in entries_with_stats if e["bmi"] > 30]
-    heavy_betas = np.mean([e["betas"] for e in heavy_entries], axis=0) if heavy_entries else avg_betas
+    heavy_betas = _pad_betas_mean([e["betas"] for e in heavy_entries]) if heavy_entries else avg_betas
     log.info(f"  Heavy: {len(heavy_entries)} entries")
 
     # Curvy: top 20% hip-to-waist ratio per gender
@@ -333,7 +373,7 @@ def compute_preset_offsets(data: list[dict]) -> dict:
         hw_ratios = [e["hw_ratio"] for e in g_entries]
         threshold = np.percentile(hw_ratios, 80)
         curvy_entries.extend([e for e in g_entries if e["hw_ratio"] >= threshold])
-    curvy_betas = np.mean([e["betas"] for e in curvy_entries], axis=0)
+    curvy_betas = _pad_betas_mean([e["betas"] for e in curvy_entries])
     log.info(f"  Curvy: {len(curvy_entries)} entries")
 
     # Compute offsets (subtract average baseline)
@@ -358,11 +398,11 @@ def compute_preset_offsets(data: list[dict]) -> dict:
 
     log.info(f"  Athletic-Heavy L2 distance (final): {ath_heavy_dist:.4f}")
 
-    # Verify offset vectors affect >= 6 of 10 beta components
+    # Verify offset vectors affect >= 6 of NUM_BETAS beta components
     for name, offset in [("slim", slim_offset), ("athletic", athletic_offset),
                          ("heavy", heavy_offset), ("curvy", curvy_offset)]:
         nonzero = np.sum(np.abs(offset) > 0.01)
-        log.info(f"  {name} affects {nonzero}/10 beta components")
+        log.info(f"  {name} affects {nonzero}/{NUM_BETAS} beta components")
         if nonzero < 6:
             log.warning(f"  {name} offset affects fewer than 6 components ({nonzero})")
 
@@ -426,9 +466,9 @@ def compute_composition_bias(data: list[dict]) -> dict:
             elif sw_p20 <= e["sw_ratio"] <= sw_p80 and wh_p20 <= e["wh_ratio"] <= wh_p80:
                 average_entries.append(e)
 
-    avg_betas = np.mean([e["betas"] for e in average_entries], axis=0)
-    athletic_betas = np.mean([e["betas"] for e in athletic_entries], axis=0)
-    heavy_betas = np.mean([e["betas"] for e in heavy_entries], axis=0)
+    avg_betas = _pad_betas_mean([e["betas"] for e in average_entries])
+    athletic_betas = _pad_betas_mean([e["betas"] for e in athletic_entries])
+    heavy_betas = _pad_betas_mean([e["betas"] for e in heavy_entries])
 
     athletic_bias = athletic_betas - avg_betas
     heavy_bias = heavy_betas - avg_betas
@@ -438,10 +478,10 @@ def compute_composition_bias(data: list[dict]) -> dict:
     log.info(f"  Heavy entries: {len(heavy_entries)}")
     log.info(f"  Average entries: {len(average_entries)}")
 
-    # Ensure composition vectors affect >= 6 of 10 beta components
+    # Ensure composition vectors affect >= 6 of NUM_BETAS beta components
     for name, bias in [("athletic", athletic_bias), ("heavy", heavy_bias)]:
         nonzero = np.sum(np.abs(bias) > 0.01)
-        log.info(f"  {name} composition affects {nonzero}/10 beta components")
+        log.info(f"  {name} composition affects {nonzero}/{NUM_BETAS} beta components")
         if nonzero < 6:
             log.warning(f"  {name} composition affects fewer than 6 components ({nonzero})")
 
@@ -569,7 +609,7 @@ def compute_fat_distribution(data: list[dict]) -> dict:
         # Build feature vectors: weightNorm and ageNorm
         weight_norms = np.array([(e["weightKg"] - 80.0) / 30.0 for e in g_entries])
         age_norms = np.array([(e["age"] - 40.0) / 25.0 for e in g_entries])
-        betas = np.array([e["betas"] for e in g_entries])
+        betas = np.array([_pad_betas(e["betas"]) for e in g_entries])
 
         # Fit per-beta: β[i] ~ a * weightNorm + b * ageNorm + c
         # Extract the weight and age coefficients
@@ -593,8 +633,8 @@ def compute_fat_distribution(data: list[dict]) -> dict:
         log.info(f"    weightToBeta: {weight_to_beta.round(4)}")
         log.info(f"    ageFactor: {age_factor.round(4)}")
 
-        # Verify gender-specific patterns
-        if gender == "male":
+        # Verify gender-specific patterns (only for first 10 betas where semantics are known)
+        if gender == "male" and NUM_BETAS >= 10:
             # Android: β1, β5 should increase faster than β7
             if weight_to_beta[1] > weight_to_beta[7] and weight_to_beta[5] > weight_to_beta[7]:
                 log.info("    ✓ Male android pattern verified (β1, β5 > β7)")
@@ -607,7 +647,7 @@ def compute_fat_distribution(data: list[dict]) -> dict:
                 weight_to_beta[1] = max(weight_to_beta[1], weight_to_beta[7] + 0.01)
                 weight_to_beta[5] = max(weight_to_beta[5], weight_to_beta[7] + 0.005)
                 log.info("    Applied android pattern correction")
-        else:
+        elif gender == "female" and NUM_BETAS >= 10:
             # Gynoid: β7, β9 should increase faster than β1
             if weight_to_beta[7] > weight_to_beta[1] and weight_to_beta[9] > weight_to_beta[1]:
                 log.info("    ✓ Female gynoid pattern verified (β7, β9 > β1)")
@@ -653,6 +693,7 @@ def export_coefficients(
     coefficients = {
         "version": version,
         "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "numBetas": NUM_BETAS,
         "regression": regression,
         "presetOffsets": preset_offsets,
         "compositionBias": composition_bias,
@@ -686,9 +727,19 @@ def main():
     log.info("=" * 60)
     log.info("SMPL Beta Coefficient Training")
     log.info("=" * 60)
+    log.info(f"  Num betas: {NUM_BETAS}")
 
     # Load dataset
     data = load_dataset(DATASET_PATH)
+
+    # Validate that dataset has enough betas
+    dataset_beta_len = len(data[0]["betas"]) if data else 0
+    if dataset_beta_len < NUM_BETAS:
+        log.warning(
+            f"Calibration dataset has {dataset_beta_len} betas per entry, "
+            f"but --num-betas={NUM_BETAS} was requested. "
+            f"Betas {dataset_beta_len}..{NUM_BETAS - 1} will be zero-padded."
+        )
 
     # Build feature matrices
     X, Y = build_feature_matrix(data)

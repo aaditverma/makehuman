@@ -14,6 +14,7 @@
 export const SMPL_MAGIC = 0x534D504C; // "SMPL" in ASCII
 export const SMPL_VERTEX_COUNT = 6890;
 export const SMPL_FACE_COUNT = 13776;
+/** Default shape count for the standard 10-PC SMPL model. The actual count is read from the binary header at runtime. */
 export const SMPL_SHAPE_COUNT = 10;
 export const SMPL_JOINT_COUNT = 24;
 export const SMPL_HEADER_BYTES = 16;
@@ -21,10 +22,11 @@ export const SMPL_HEADER_BYTES = 16;
 /** SMPL model data loaded from binary asset */
 export interface SmplModelData {
   templateVertices: Float32Array;   // 6890 × 3 = 20,670 floats (mean shape)
-  shapeBlendShapes: Float32Array;   // 10 × 6890 × 3 = 206,700 floats (PCA components)
+  shapeBlendShapes: Float32Array;   // shapeCount × 6890 × 3 floats (PCA components)
   faceIndices: Uint16Array;         // 13,776 × 3 = 41,328 (triangle connectivity)
   jointRegressor: Float32Array;     // 24 × 6890 (sparse, for joint locations)
   landmarkVertexIndices: Map<string, number>; // anatomical name → vertex index
+  shapeCount: number;               // actual PC count from binary header
 }
 
 /**
@@ -75,9 +77,9 @@ function validateHeader(header: SmplHeader): void {
       `Invalid SMPL file: expected ${SMPL_FACE_COUNT} faces, got ${header.faceCount}`
     );
   }
-  if (header.shapeCount !== SMPL_SHAPE_COUNT) {
+  if (header.shapeCount < 1 || header.shapeCount > 300) {
     throw new Error(
-      `Invalid SMPL file: expected ${SMPL_SHAPE_COUNT} shape components, got ${header.shapeCount}`
+      `Invalid SMPL file: shapeCount must be between 1 and 300, got ${header.shapeCount}`
     );
   }
 }
@@ -186,6 +188,7 @@ export function parseSmplBinary(buffer: ArrayBuffer): SmplModelData {
     faceIndices,
     jointRegressor,
     landmarkVertexIndices,
+    shapeCount,
   };
 }
 
@@ -213,8 +216,10 @@ export function computeSmplVertices(
   outputVertices.set(model.templateVertices);
 
   // Accumulate shape blend shapes: V += βᵢ × Sᵢ
+  // Use min(betas.length, model.shapeCount) — handles mismatched sizes
+  const numShapes = Math.min(betas.length, model.shapeCount);
   const shapes = model.shapeBlendShapes;
-  for (let i = 0; i < SMPL_SHAPE_COUNT; i++) {
+  for (let i = 0; i < numShapes; i++) {
     const beta = betas[i];
     if (beta === 0) continue; // skip zero contributions
 

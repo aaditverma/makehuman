@@ -7,6 +7,7 @@ synthetic SMPL-based heuristic approach.
 
 Usage:
     python scripts/generate-shapy-data.py
+    python scripts/generate-shapy-data.py --num-betas 20
 """
 
 import os
@@ -14,6 +15,7 @@ import sys
 import json
 import time
 import logging
+import argparse
 import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
@@ -26,6 +28,12 @@ OUT_PATH = os.path.join(OUT_DIR, "calibration_dataset.json")
 
 MALE_CSV = os.path.join(DATA_DIR, "ansur2_male.csv")
 FEMALE_CSV = os.path.join(DATA_DIR, "ansur2_female.csv")
+
+# ── CLI Args ─────────────────────────────────────────────
+_parser = argparse.ArgumentParser(description="Generate SHAPY calibration dataset")
+_parser.add_argument("--num-betas", type=int, default=10,
+                     help="Number of beta components to generate (default: 10)")
+_cli_args = _parser.parse_args()
 
 # ── Logging ──────────────────────────────────────────────
 logging.basicConfig(
@@ -42,7 +50,7 @@ GENDERS = ["male", "female"]
 BMI_MIN = 14
 BMI_MAX = 50
 MIN_VALID_ENTRIES = 5000
-NUM_BETAS = 10
+NUM_BETAS = _cli_args.num_betas
 KNN_K = 5
 
 
@@ -163,8 +171,9 @@ def _try_import_shapy():
 
 def _shapy_a2s_predict(model, measurements: dict, gender: str) -> np.ndarray | None:
     """
-    Invoke SHAPY A2S to get 10 SMPL betas from measurements.
-    Returns ndarray(10) or None on failure.
+    Invoke SHAPY A2S to get SMPL betas from measurements.
+    Returns ndarray(NUM_BETAS) or None on failure.
+    Pads with 0.0 if SHAPY outputs fewer betas than requested.
     """
     try:
         result = model.predict(
@@ -174,10 +183,15 @@ def _shapy_a2s_predict(model, measurements: dict, gender: str) -> np.ndarray | N
             hips=measurements["hipCm"],
             gender=gender,
         )
-        betas = np.array(result[:NUM_BETAS], dtype=np.float64)
-        if not np.all(np.isfinite(betas)):
+        raw_betas = np.array(result, dtype=np.float64)
+        if not np.all(np.isfinite(raw_betas)):
             return None
-        return betas
+        # Pad or truncate to NUM_BETAS
+        if len(raw_betas) < NUM_BETAS:
+            betas = np.zeros(NUM_BETAS, dtype=np.float64)
+            betas[:len(raw_betas)] = raw_betas
+            return betas
+        return raw_betas[:NUM_BETAS]
     except Exception as e:
         log.debug(f"SHAPY A2S error: {e}")
         return None
@@ -273,6 +287,8 @@ def _synthetic_betas(
     if gender_code == 0:
         betas[9] += 0.08 * max(w_norm, 0)
 
+    # Betas beyond index 9 remain 0.0 (no heuristic for higher PCs)
+
     # Age-related redistribution: older → more central fat
     if age > 40:
         age_shift = (age - 40) / 40.0
@@ -301,9 +317,9 @@ def generate_betas_for_point(
     rng: np.random.Generator,
 ) -> np.ndarray | None:
     """
-    Get 10 SMPL betas for a single grid point.
+    Get NUM_BETAS SMPL betas for a single grid point.
     Uses SHAPY A2S if available, otherwise synthetic fallback.
-    Returns ndarray(10) or None on failure.
+    Returns ndarray(NUM_BETAS) or None on failure.
     """
     if shapy_model is not None:
         try:
@@ -378,6 +394,7 @@ def main():
         log.info("SHAPY not available – using synthetic beta fallback.")
     else:
         log.info("Using SHAPY A2S for beta generation.")
+        log.info(f"  Requesting {NUM_BETAS} betas per entry (will pad with 0.0 if SHAPY outputs fewer).")
 
     # 3. Iterate over population grid
     rng = np.random.default_rng(seed=42)
@@ -428,6 +445,7 @@ def main():
                         "hipCm": round(measurements["hipCm"], 1),
                         "shoulderCm": round(measurements["shoulderCm"], 1),
                         "inseamCm": round(measurements["inseamCm"], 1),
+                        "numBetas": NUM_BETAS,
                         "betas": [round(float(b), 4) for b in betas],
                     })
 

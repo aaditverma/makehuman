@@ -139,6 +139,8 @@ describe('smplForwardPass', () => {
       expect(model.shapeBlendShapes).toBeInstanceOf(Float32Array);
       expect(model.shapeBlendShapes.length).toBe(SMPL_SHAPE_COUNT * SMPL_VERTEX_COUNT * 3);
 
+      expect(model.shapeCount).toBe(SMPL_SHAPE_COUNT);
+
       expect(model.faceIndices).toBeInstanceOf(Uint16Array);
       expect(model.faceIndices.length).toBe(SMPL_FACE_COUNT * 3);
 
@@ -172,11 +174,11 @@ describe('smplForwardPass', () => {
       expect(() => parseSmplBinary(buffer)).toThrow(/faces/i);
     });
 
-    it('rejects binary with wrong shape count', () => {
+    it('rejects binary with shapeCount outside valid range', () => {
       const buffer = buildTestSmplBinary();
       const view = new DataView(buffer);
-      view.setUint16(10, 5, true); // wrong shapeCount
-      expect(() => parseSmplBinary(buffer)).toThrow(/shape/i);
+      view.setUint16(10, 0, true); // shapeCount = 0, below valid range [1, 300]
+      expect(() => parseSmplBinary(buffer)).toThrow(/shapeCount/i);
     });
 
     it('rejects truncated binary (too small for header)', () => {
