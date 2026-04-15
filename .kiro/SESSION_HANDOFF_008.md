@@ -69,8 +69,18 @@ Created and fully implemented 3 new specs addressing the accuracy gap identified
 - **7 pre-existing test failures**: Demographics-only round-trip accuracy tests (chest/waist/hip/inseam ≤5cm for ≥80%) — fundamental limitation of 4-input regression.
 
 ## Next Steps
-1. **Extract real SHAPY A2S coefficients**: `python scripts/extract-shapy-a2s.py --checkpoint /path/to/a2s.pt --shapy-dir /path/to/shapy`
+1. **Extract real SHAPY A2S coefficients**: Run SHAPY's A2S demo first to download model weights (`cd shapy/attributes && python demo.py --exp-cfg configs/a2s_variations_polynomial/04b_ahcwh2s.yaml ...`), then find the checkpoint in `data/trained_models/a2b/`, then run `python scripts/extract-shapy-a2s.py --checkpoint <path>`. The `.pt` files in `samples/attributes/` are sample INPUT data (ratings/measurements), NOT model weights.
 2. **Regenerate assets with 20+ PCs**: `export-smpl-assets.py --num-shapes 20`, `generate-smpl-model.py --no-morphs`, `generate-subdivision-map.py`
 3. **Visual testing**: Verify SMPL body renders correctly with buffer geometry update path
 4. **Female model**: SMPL female pickle available, swap model weights
 5. **Shopify integration**: Phase 3 planning
+
+## SHAPY Investigation Notes (Session 008)
+- SHAPY repo cloned to `C:\Users\aadit\Downloads\shapy`
+- `pip install -e .` fails — no setup.py at repo root (package is in subdirectory)
+- `pip install torch` succeeded (PyTorch installed)
+- `samples/attributes/modeldata_for_a2s_male.pt` is NOT model weights — it's sample input data (ratings, bust/hips/waist measurements) serialized with joblib/pickle
+- `git lfs ls-files` returns nothing — repo doesn't use LFS
+- The real A2S trained model weights are downloaded when running SHAPY's demo scripts, stored at `data/trained_models/a2b/caesar-male_smplx-neutral-10betas/poynomial/`
+- To get the weights: run the A2S demo from `shapy/attributes/` which triggers the download
+- Our synthetic coefficients work in the meantime — trained on the same calibration dataset patterns

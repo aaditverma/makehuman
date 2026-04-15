@@ -303,6 +303,29 @@ Phase 2 starts with pre-baked Blender cloth sim (Option A) as a practical founda
 - More garment types (polo, hoodie, jacket, shorts, etc.)
 - Garment construction data for better shapes
 
+### ⚠️ Pre-Phase 3 Checklist — MUST Complete Before Shopify Integration
+These items must be done before starting Phase 3 (real garment mapping + Shopify):
+
+1. **Extract real SHAPY A2S coefficients** (replaces synthetic):
+   - Install SHAPY: `cd C:\Users\aadit\Downloads\shapy\attributes` then run the A2S demo (e.g. `python demo.py --exp-cfg configs/a2s_variations_polynomial/04b_ahcwh2s.yaml ...`) — this downloads the trained model weights to `data/trained_models/a2b/`
+   - Find the downloaded checkpoint (look in `C:\Users\aadit\Downloads\shapy\data\trained_models\` or `~/.cache/`)
+   - Run extraction: `python scripts/extract-shapy-a2s.py --checkpoint <path_to_checkpoint> --shapy-dir C:\Users\aadit\Downloads\shapy`
+   - Copy to public: `copy src\data\shapy_a2s_coefficients.json public\data\shapy_a2s_coefficients.json`
+   - Run tests: `npx vitest --run`
+
+2. **Regenerate assets with 20+ PCs**:
+   - Export binary: `python scripts/export-smpl-assets.py --smpl-pkl <pkl_path> --num-shapes 20 --out public/models/smpl/`
+   - Generate morph-free GLB: `blender --background --python scripts/generate-smpl-model.py -- --smpl-pkl <pkl_path> --no-morphs --subdivisions 2 --texture public/models/textures/young_lightskinned_male_diffuse.png`
+   - Generate subdivision map: `blender --background --python scripts/generate-subdivision-map.py -- --smpl-pkl <pkl_path>`
+   - Retrain coefficients: `python scripts/train-beta-coefficients.py --num-betas 20`
+   - Copy coefficients: `copy src\data\calibrated_coefficients.json public\data\calibrated_coefficients.json`
+
+3. **Visual testing**:
+   - Run `npm run dev` and verify SMPL body renders correctly with buffer geometry update path
+   - Verify smooth animation when changing height/weight/measurements
+   - Verify MakeHuman engine mode still works with morph targets
+   - Verify heatmap renders correctly on both engines
+
 ### Morph Target Issues
 - Some morphs have cross-region bleed at boundaries
 - Weight slider caps out at extreme weights (morph displacement limit)
